@@ -763,15 +763,44 @@ function attachLocationToForm(formId) {
   longitudeInput.name = 'longitude';
   longitudeInput.id = 'longitude';
 
+  const countryInput = document.createElement('input');
+  countryInput.type = 'hidden';
+  countryInput.name = 'country';
+  countryInput.id = 'country';
+
+  const cityInput = document.createElement('input');
+  cityInput.type = 'hidden';
+  cityInput.name = 'city';
+  cityInput.id = 'city';
+
   form.appendChild(latitudeInput);
   form.appendChild(longitudeInput);
+  form.appendChild(countryInput);
+  form.appendChild(cityInput);
 
   form.addEventListener('submit', async (e) => {
     // Use stored location if available
     const storedLocation = locationService.loadFromStorage();
-    if (storedLocation && storedLocation.location) {
-      document.getElementById('latitude').value = storedLocation.location.latitude || '';
-      document.getElementById('longitude').value = storedLocation.location.longitude || '';
+    if (storedLocation) {
+      console.log('📍 Using stored location:', storedLocation);
+      
+      // Set coordinates if available
+      if (storedLocation.location) {
+        document.getElementById('latitude').value = storedLocation.location.latitude || '';
+        document.getElementById('longitude').value = storedLocation.location.longitude || '';
+        
+        // Set city if available
+        if (storedLocation.location.city) {
+          document.getElementById('city').value = storedLocation.location.city;
+        }
+      }
+      
+      // Set country code (most important for units)
+      if (storedLocation.country) {
+        document.getElementById('country').value = storedLocation.country;
+        console.log('✅ Country set to:', storedLocation.country);
+      }
+      
       return; // Form will submit normally
     }
 

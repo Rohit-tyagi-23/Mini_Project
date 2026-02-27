@@ -119,6 +119,8 @@ def login():
         password = request.form.get("password")
         latitude = request.form.get("latitude")
         longitude = request.form.get("longitude")
+        country = request.form.get("country")
+        city = request.form.get("city")
         
         # Check credentials
         if email in users_db and users_db[email]['password'] == password:
@@ -128,8 +130,23 @@ def login():
             if request.form.get('simple_session') == '1' or is_simple_browser_request():
                 simple_browser_sessions[get_client_key()] = email
             
-            # Update location if provided
-            if latitude and longitude:
+            # Update location and units if provided
+            if country:
+                # Country code provided - use it to set units
+                users_db[email]['location'] = {
+                    'country': country,
+                    'city': city or ''
+                }
+                if latitude and longitude:
+                    users_db[email]['location']['latitude'] = float(latitude)
+                    users_db[email]['location']['longitude'] = float(longitude)
+                
+                # Set units based on country
+                users_db[email]['units'] = UNIT_STANDARDS.get(country, UNIT_STANDARDS.get('US', {}))
+                session['location'] = users_db[email]['location']
+                session['units'] = users_db[email]['units']
+            elif latitude and longitude:
+                # Only lat/long provided
                 users_db[email]['location'] = {
                     'latitude': float(latitude),
                     'longitude': float(longitude)
@@ -137,6 +154,7 @@ def login():
                 session['location'] = users_db[email]['location']
                 session['units'] = users_db[email].get('units', UNIT_STANDARDS.get('US', {}))
             else:
+                # No location provided - use stored or default
                 session['location'] = users_db[email].get('location', {})
                 session['units'] = users_db[email].get('units', UNIT_STANDARDS.get('US', {}))
             
@@ -157,6 +175,8 @@ def signup():
         restaurant_name = request.form.get("restaurant_name")
         latitude = request.form.get("latitude")
         longitude = request.form.get("longitude")
+        country = request.form.get("country")
+        city = request.form.get("city")
         
         # Check if user already exists
         if email in users_db:
@@ -167,11 +187,25 @@ def signup():
             'password': password,
             'name': f"{first_name} {last_name}",
             'restaurant': restaurant_name,
-            'location': {}
+            'location': {},
+            'units': UNIT_STANDARDS.get('US', {})  # Default to US
         }
         
-        # Add location if provided
-        if latitude and longitude:
+        # Set location and units based on provided data
+        if country:
+            # Country code provided - use it to set units
+            user_data['location'] = {
+                'country': country,
+                'city': city or ''
+            }
+            if latitude and longitude:
+                user_data['location']['latitude'] = float(latitude)
+                user_data['location']['longitude'] = float(longitude)
+            
+            # Set units based on country
+            user_data['units'] = UNIT_STANDARDS.get(country, UNIT_STANDARDS.get('US', {}))
+        elif latitude and longitude:
+            # Only lat/long provided
             user_data['location'] = {
                 'latitude': float(latitude),
                 'longitude': float(longitude)
