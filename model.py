@@ -44,6 +44,7 @@ def forecast_arima(sales_data, periods=7):
         return {
             'daily': float(forecast.mean()),
             'weekly': float(forecast.sum()),
+            'predictions': forecast.tolist(),
             'confidence': 0.85
         }
     except Exception as e:
@@ -83,6 +84,9 @@ def forecast_prophet(df, periods=7):
         return {
             'daily': float(forecast_period['yhat'].mean()),
             'weekly': float(forecast_period['yhat'].sum()),
+            'predictions': forecast_period['yhat'].tolist(),
+            'upper_bound': forecast_period['yhat_upper'].tolist() if 'yhat_upper' in forecast_period else None,
+            'lower_bound': forecast_period['yhat_lower'].tolist() if 'yhat_lower' in forecast_period else None,
             'confidence': 0.90
         }
     except Exception as e:
@@ -141,6 +145,7 @@ def forecast_lstm(sales_data, periods=7):
         return {
             'daily': float(predictions.mean()),
             'weekly': float(predictions.sum()),
+            'predictions': predictions.tolist(),
             'confidence': 0.88
         }
     except Exception as e:
@@ -168,13 +173,14 @@ def forecast_exponential_smoothing(sales_data, periods=7):
         return {
             'daily': float(forecast.mean()),
             'weekly': float(forecast.sum()),
+            'predictions': forecast.tolist(),
             'confidence': 0.82
         }
     except Exception as e:
         return None
 
 
-def forecast_moving_average(sales_data, window=7):
+def forecast_moving_average(sales_data, window=7, periods=7):
     """
     Fallback: Simple moving average forecasting.
     """
@@ -182,31 +188,40 @@ def forecast_moving_average(sales_data, window=7):
         return {
             'daily': 0,
             'weekly': 0,
+            'predictions': [0] * periods,
             'confidence': 0.50
         }
     
     avg_daily = np.mean(sales_data[-window:])
+    predictions = [float(avg_daily)] * periods
     return {
         'daily': float(avg_daily),
         'weekly': float(avg_daily * 7),
+        'predictions': predictions,
         'confidence': 0.65
     }
 
 
-def forecast_demand(ingredient_df: pd.DataFrame, window: int = 7) -> dict:
+def forecast_demand(ingredient_df: pd.DataFrame, window: int = 7, periods: int = 7) -> dict:
     """
     Advanced AI-powered demand forecasting with automatic model selection.
     Tries multiple models and selects the best one based on validation.
+    
+    Args:
+        ingredient_df: DataFrame with date and quantity_sold columns
+        window: Window size for moving average (default 7)
+        periods: Number of periods to forecast (default 7)
     """
     ingredient_df = ingredient_df.sort_values("date")
     sales = ingredient_df["quantity_sold"].values
     
     if len(sales) < 5:
         # Not enough data, use simple average
-        result = forecast_moving_average(sales, window)
+        result = forecast_moving_average(sales, window, periods)
         return {
             "avg_daily": round(result['daily'], 2),
             "weekly_forecast": round(result['weekly'], 2),
+            "predictions": result['predictions'],
             "model_used": "Moving Average (Insufficient Data)",
             "confidence": result['confidence']
         }
@@ -216,30 +231,30 @@ def forecast_demand(ingredient_df: pd.DataFrame, window: int = 7) -> dict:
     
     # Prophet (best for seasonal data)
     if PROPHET_AVAILABLE and len(ingredient_df) >= 10:
-        prophet_result = forecast_prophet(ingredient_df.copy())
+        prophet_result = forecast_prophet(ingredient_df.copy(), periods)
         if prophet_result:
             models.append(('Prophet', prophet_result))
     
     # ARIMA (good for trend data)
     if ARIMA_AVAILABLE and len(sales) >= 10:
-        arima_result = forecast_arima(sales)
+        arima_result = forecast_arima(sales, periods)
         if arima_result:
             models.append(('ARIMA', arima_result))
     
     # Exponential Smoothing (balanced approach)
     if ARIMA_AVAILABLE and len(sales) >= 14:
-        es_result = forecast_exponential_smoothing(sales)
+        es_result = forecast_exponential_smoothing(sales, periods)
         if es_result:
             models.append(('Exponential Smoothing', es_result))
     
     # LSTM (best for complex patterns, but needs more data)
     if LSTM_AVAILABLE and len(sales) >= 20:
-        lstm_result = forecast_lstm(sales)
+        lstm_result = forecast_lstm(sales, periods)
         if lstm_result:
             models.append(('LSTM Neural Network', lstm_result))
     
     # Always include moving average as baseline
-    ma_result = forecast_moving_average(sales, window)
+    ma_result = forecast_moving_average(sales, window, periods)
     models.append(('Moving Average', ma_result))
     
     # Select best model based on confidence and non-negative predictions
@@ -253,18 +268,32 @@ def forecast_demand(ingredient_df: pd.DataFrame, window: int = 7) -> dict:
     
     if best_model:
         model_name, result = best_model
+        
+        # Calculate confidence intervals if not provided
+        if 'upper_bound' not in result or result['upper_bound'] is None:
+            ci = calculate_confidence_intervals(sales, result['predictions'])
+            result['upper_bound'] = ci['upper']
+            result['lower_bound'] = ci['lower']
+        
         return {
             "avg_daily": round(result['daily'], 2),
             "weekly_forecast": round(result['weekly'], 2),
+            "predictions": result['predictions'],
+            "upper_bound": result.get('upper_bound'),
+            "lower_bound": result.get('lower_bound'),
             "model_used": model_name,
             "confidence": round(result['confidence'] * 100, 1)
         }
     
     # Fallback
-    result = forecast_moving_average(sales, window)
+    result = forecast_moving_average(sales, window, periods)
+    ci = calculate_confidence_intervals(sales, result['predictions'])
     return {
         "avg_daily": round(result['daily'], 2),
         "weekly_forecast": round(result['weekly'], 2),
+        "predictions": result['predictions'],
+        "upper_bound": ci['upper'],
+        "lower_bound": ci['lower'],
         "model_used": "Moving Average (Fallback)",
         "confidence": round(result['confidence'] * 100, 1)
     }

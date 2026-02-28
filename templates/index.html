@@ -50,30 +50,41 @@
         <h2>Forecast Parameters</h2>
       </div>
       <div class="card-body">
-        <form id="forecastForm" action="/result" method="POST">
+        <form id="forecast-form" method="POST">
           <div class="form-row">
             <div class="form-group">
-              <label for="ingredient"><i class="fas fa-box"></i> Ingredient</label>
-              <select name="ingredient" id="ingredient" required>
-                <option value="">Select ingredient...</option>
+              <label for="forecast-ingredient"><i class="fas fa-box"></i> Ingredient(s)</label>
+              <select name="ingredient" id="forecast-ingredient" multiple size="5" required>
                 {% for ingredient in ingredients %}
                   <option value="{{ ingredient }}">{{ ingredient }}</option>
                 {% endfor %}
               </select>
+              <small>Hold Ctrl/Cmd to select multiple ingredients</small>
             </div>
 
             <div class="form-group">
-              <label for="current_stock"><i class="fas fa-warehouse"></i> Current Stock (units)</label>
-              <input type="number" name="current_stock" id="current_stock" step="0.1" value="50" required />
+              <label for="days_ahead"><i class="fas fa-calendar"></i> Time Horizon</label>
+              <select name="days_ahead" id="days_ahead" required>
+                <option value="7" selected>7 Days</option>
+                <option value="14">14 Days</option>
+                <option value="30">30 Days</option>
+              </select>
             </div>
           </div>
 
           <div class="form-row">
             <div class="form-group">
+              <label for="current_stock"><i class="fas fa-warehouse"></i> Current Stock (units)</label>
+              <input type="number" name="current_stock" id="current_stock" step="0.1" value="50" required />
+            </div>
+
+            <div class="form-group">
               <label for="lead_time_days"><i class="fas fa-truck"></i> Supplier Lead Time (days)</label>
               <input type="number" name="lead_time_days" id="lead_time_days" value="3" min="1" required />
             </div>
+          </div>
 
+          <div class="form-row">
             <div class="form-group">
               <label for="service_level"><i class="fas fa-percentage"></i> Service Level (0-1)</label>
               <input type="number" name="service_level" id="service_level" step="0.01" value="0.95" min="0" max="1" required />
@@ -85,27 +96,42 @@
             <button type="submit" class="btn btn-primary">
               <i class="fas fa-chart-line"></i> Generate Forecast
             </button>
-            <button type="button" class="btn btn-secondary" onclick="resetForm()">
+            <button type="button" class="btn btn-secondary" id="reset-forecast-btn">
               <i class="fas fa-undo"></i> Reset
             </button>
           </div>
         </form>
+
+        <!-- CSV Upload Section -->
+        <div class="csv-upload-section" style="margin-top: 2rem; padding-top: 2rem; border-top: 2px solid #eee;">
+          <h3><i class="fas fa-file-csv"></i> Upload Training Data</h3>
+          <p>Upload a CSV file to train the model with custom historical sales data.</p>
+          <div class="form-group">
+            <label for="csv-file-input"><i class="fas fa-upload"></i> Select CSV File</label>
+            <input type="file" id="csv-file-input" accept=".csv" />
+            <small>Required columns: date, ingredient, quantity_sold</small>
+          </div>
+          <button type="button" class="btn btn-secondary" id="csv-upload-btn">
+            <i class="fas fa-cloud-upload-alt"></i> Upload CSV
+          </button>
+        </div>
       </div>
     </div>
 
-    <!-- Quick Preview Section -->
-    <div id="quickPreview" class="card" style="display: none;">
+    <!-- Forecast Results Section -->
+    <div id="forecast-results" class="card" style="display: none;">
       <div class="card-header">
-        <h2><i class="fas fa-eye"></i> Quick Preview</h2>
+        <h2><i class="fas fa-chart-bar"></i> Forecast Results</h2>
       </div>
       <div class="card-body">
-        <canvas id="previewChart" height="80"></canvas>
+        <div id="forecast-stats"></div>
+        <div id="forecast-decision" style="display: none;"></div>
+        <div id="forecast-alerts" style="display: none;"></div>
+        <canvas id="forecast-chart" height="100"></canvas>
+        <div id="forecast-table" style="margin-top: 2rem;"></div>
       </div>
     </div>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <script src="{{ url_for('static', filename='location.js') }}"></script>
-  <script src="{{ url_for('static', filename='forecast.js') }}"></script>
-</body>
-</html>
+  <script type="module" src="{{ url_for('static', filename='modules/forecast.js') }}"></script>

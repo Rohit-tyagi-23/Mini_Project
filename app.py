@@ -8,12 +8,25 @@ from model import (forecast_demand, optimize_inventory, generate_alerts,
                    calculate_error_metrics, generate_training_predictions, 
                    calculate_confidence_intervals)
 from alerts import init_alerts
+from models import db, User, Location, SalesRecord, Forecast, AlertPreference, AlertHistory, IngredientMaster
+import json
 
 load_dotenv()
 
 app = Flask(__name__)
 app.config['JSON_SORT_KEYS'] = False
-app.secret_key = 'your-secret-key-change-in-production'  # Change this in production!
+app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
+
+# Database configuration
+database_url = os.getenv('DATABASE_URL', 'sqlite:///restaurant_ai.db')
+# Handle SQLite URIs
+if database_url.startswith('sqlite'):
+    database_url = database_url.replace('sqlite:///', f'sqlite:///{os.path.dirname(os.path.abspath(__file__))}/')
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Initialize database
+db.init_app(app)
 
 # Email configuration
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
@@ -52,24 +65,6 @@ CONVERSION_FACTORS = {
     'ml_to_fl_oz': 0.033814,
 }
 
-# Simple in-memory user storage (replace with database in production)
-users_db = {
-    'demo@restaurant.com': {
-        'password': 'demo123',
-        'name': 'Demo User',
-        'email': 'demo@restaurant.com',
-        'restaurant': 'Demo Restaurant',
-        'location': {'latitude': 40.7128, 'longitude': -74.0060, 'country': 'US', 'city': 'New York'},
-        'units': UNIT_STANDARDS.get('US', {}),
-        'alert_preferences': {
-            'email_enabled': False,
-            'sms_enabled': False,
-            'phone_number': '',
-            'alert_threshold_percentage': 20  # Alert when stock falls below 20% of reorder point
-        }
-    }
-}
-
 # Simple Browser fallback session map (keyed by client IP + user agent)
 simple_browser_sessions = {}
 
@@ -93,13 +88,20 @@ def login_required(f):
         if 'user' not in session:
             client_key = get_client_key()
             simple_user = simple_browser_sessions.get(client_key)
-            if simple_user and simple_user in users_db:
-                session['user'] = simple_user
-                session['name'] = users_db[simple_user].get('name')
-                session['restaurant'] = users_db[simple_user].get('restaurant')
-                session['location'] = users_db[simple_user].get('location', {})
-                session['units'] = users_db[simple_user].get('units', UNIT_STANDARDS.get('US', {}))
-                return f(*args, **kwargs)
+            if simple_user:
+                # Verify user still exists in database
+                user = User.query.filter_by(email=simple_user).first()
+                if user:
+                    session['user'] = user.email
+                    session['name'] = user.get_full_name()
+                    session['restaurant'] = user.restaurant_name
+                    if user.location:
+                        session['location'] = user.location.to_dict()
+                        session['units'] = user.location.get_units()
+                    else:
+                        session['location'] = {}
+                        session['units'] = UNIT_STANDARDS.get('US', {})
+                    return f(*args, **kwargs)
             return redirect(url_for('login'))
         return f(*args, **kwargs)
     return decorated_function
@@ -122,41 +124,45 @@ def login():
         country = request.form.get("country")
         city = request.form.get("city")
         
-        # Check credentials
-        if email in users_db and users_db[email]['password'] == password:
-            session['user'] = email
-            session['name'] = users_db[email]['name']
-            session['restaurant'] = users_db[email]['restaurant']
+        # Check credentials from database
+        user = User.query.filter_by(email=email).first()
+        if user and user.check_password(password):
+            session['user'] = user.email
+            session['name'] = user.get_full_name()
+            session['restaurant'] = user.restaurant_name
+            
             if request.form.get('simple_session') == '1' or is_simple_browser_request():
                 simple_browser_sessions[get_client_key()] = email
             
             # Update location and units if provided
-            if country:
-                # Country code provided - use it to set units
-                users_db[email]['location'] = {
-                    'country': country,
-                    'city': city or ''
-                }
-                if latitude and longitude:
-                    users_db[email]['location']['latitude'] = float(latitude)
-                    users_db[email]['location']['longitude'] = float(longitude)
+            if country or (latitude and longitude):
+                location = user.location
+                if not location:
+                    location = Location(user_id=user.id)
+                    db.session.add(location)
                 
-                # Set units based on country
-                users_db[email]['units'] = UNIT_STANDARDS.get(country, UNIT_STANDARDS.get('US', {}))
-                session['location'] = users_db[email]['location']
-                session['units'] = users_db[email]['units']
-            elif latitude and longitude:
-                # Only lat/long provided
-                users_db[email]['location'] = {
-                    'latitude': float(latitude),
-                    'longitude': float(longitude)
-                }
-                session['location'] = users_db[email]['location']
-                session['units'] = users_db[email].get('units', UNIT_STANDARDS.get('US', {}))
+                if country:
+                    location.country = country
+                    location.city = city or ''
+                    location.set_units(UNIT_STANDARDS.get(country, UNIT_STANDARDS.get('US', {})))
+                    session['units'] = location.get_units()
+                
+                if latitude and longitude:
+                    location.latitude = float(latitude)
+                    location.longitude = float(longitude)
+                
+                db.session.commit()
+                session['location'] = location.to_dict()
+                if not country:
+                    session['units'] = location.get_units() or UNIT_STANDARDS.get('US', {})
             else:
-                # No location provided - use stored or default
-                session['location'] = users_db[email].get('location', {})
-                session['units'] = users_db[email].get('units', UNIT_STANDARDS.get('US', {}))
+                # Use stored location or default
+                if user.location:
+                    session['location'] = user.location.to_dict()
+                    session['units'] = user.location.get_units()
+                else:
+                    session['location'] = {}
+                    session['units'] = UNIT_STANDARDS.get('US', {})
             
             return redirect(url_for('dashboard'))
         else:
@@ -179,49 +185,62 @@ def signup():
         city = request.form.get("city")
         
         # Check if user already exists
-        if email in users_db:
+        if User.query.filter_by(email=email).first():
             return render_template("signup.html", error="Email already registered")
         
-        # Create new user
-        user_data = {
-            'password': password,
-            'name': f"{first_name} {last_name}",
-            'restaurant': restaurant_name,
-            'location': {},
-            'units': UNIT_STANDARDS.get('US', {})  # Default to US
-        }
-        
-        # Set location and units based on provided data
-        if country:
-            # Country code provided - use it to set units
-            user_data['location'] = {
-                'country': country,
-                'city': city or ''
-            }
-            if latitude and longitude:
-                user_data['location']['latitude'] = float(latitude)
-                user_data['location']['longitude'] = float(longitude)
+        try:
+            # Create new user
+            user = User(
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                restaurant_name=restaurant_name
+            )
+            user.set_password(password)
+            db.session.add(user)
+            db.session.flush()  # Get the user ID
             
-            # Set units based on country
-            user_data['units'] = UNIT_STANDARDS.get(country, UNIT_STANDARDS.get('US', {}))
-        elif latitude and longitude:
-            # Only lat/long provided
-            user_data['location'] = {
-                'latitude': float(latitude),
-                'longitude': float(longitude)
-            }
+            # Set location and units based on provided data
+            location = Location(user_id=user.id)
+            if country:
+                location.country = country
+                location.city = city or ''
+                location.set_units(UNIT_STANDARDS.get(country, UNIT_STANDARDS.get('US', {})))
+            else:
+                location.set_units(UNIT_STANDARDS.get('US', {}))
+            
+            if latitude and longitude:
+                location.latitude = float(latitude)
+                location.longitude = float(longitude)
+            
+            db.session.add(location)
+            
+            # Create default alert preferences
+            alert_prefs = AlertPreference(
+                user_id=user.id,
+                email_enabled=True,
+                email_address=email,
+                threshold_percentage=25
+            )
+            db.session.add(alert_prefs)
+            
+            db.session.commit()
+            
+            if request.form.get('simple_session') == '1' or is_simple_browser_request():
+                simple_browser_sessions[get_client_key()] = email
+            
+            # Auto login after signup
+            session['user'] = user.email
+            session['name'] = user.get_full_name()
+            session['restaurant'] = user.restaurant_name
+            session['location'] = location.to_dict()
+            session['units'] = location.get_units()
+            
+            return redirect(url_for('dashboard'))
         
-        users_db[email] = user_data
-
-        if request.form.get('simple_session') == '1' or is_simple_browser_request():
-            simple_browser_sessions[get_client_key()] = email
-        
-        # Auto login after signup
-        session['user'] = email
-        session['name'] = users_db[email]['name']
-        session['restaurant'] = users_db[email]['restaurant']
-        session['location'] = users_db[email].get('location', {})
-        session['units'] = users_db[email].get('units', UNIT_STANDARDS.get('US', {}))
+        except Exception as e:
+            db.session.rollback()
+            return render_template("signup.html", error=f"Signup error: {str(e)}")
         
         return redirect(url_for('dashboard'))
     
@@ -239,26 +258,42 @@ def logout():
 
 @app.route("/guest-login")
 def guest_login():
-    """Guest login - creates a temporary session"""
+    """Guest login - creates a temporary session using demo account"""
+    # Use the demo account as guest login
+    demo_user = User.query.filter_by(email='demo@restaurant.com').first()
+    
+    if not demo_user:
+        # Fallback: create demo account if it doesn't exist
+        demo_user = User(
+            email='demo@restaurant.com',
+            first_name='Demo',
+            last_name='User',
+            restaurant_name='Demo Restaurant'
+        )
+        demo_user.set_password('demo123')
+        db.session.add(demo_user)
+        
+        location = Location(user_id=demo_user.id, country='US')
+        location.set_units(UNIT_STANDARDS.get('US', {}))
+        db.session.add(location)
+        
+        db.session.commit()
+    
+    # Create guest session
     client_key = get_client_key()
-    guest_email = f"guest_{abs(hash(client_key))}@local"
-    if guest_email not in users_db:
-        users_db[guest_email] = {
-            'password': '',
-            'name': 'Guest User',
-            'restaurant': 'Guest Restaurant',
-            'location': {},
-            'units': UNIT_STANDARDS.get('US', {})
-        }
-
-    session['user'] = guest_email
-    session['name'] = users_db[guest_email]['name']
-    session['restaurant'] = users_db[guest_email]['restaurant']
-    session['location'] = users_db[guest_email].get('location', {})
-    session['units'] = users_db[guest_email].get('units', UNIT_STANDARDS.get('US', {}))
-
+    session['user'] = demo_user.email
+    session['name'] = demo_user.get_full_name()
+    session['restaurant'] = demo_user.restaurant_name
+    
+    if demo_user.location:
+        session['location'] = demo_user.location.to_dict()
+        session['units'] = demo_user.location.get_units()
+    else:
+        session['location'] = {}
+        session['units'] = UNIT_STANDARDS.get('US', {})
+    
     if is_simple_browser_request():
-        simple_browser_sessions[client_key] = guest_email
+        simple_browser_sessions[client_key] = demo_user.email
 
     return redirect(url_for('dashboard'))
 
@@ -319,18 +354,37 @@ def oauth_callback(provider):
     # 4. Set session
     
     # For demo purposes, create a mock social user
-    email = f'social.user@{provider}.com'
-    if email not in users_db:
-        users_db[email] = {
-            'password': '',  # No password for OAuth users
-            'name': f'{provider.capitalize()} User',
-            'restaurant': f'{provider.capitalize()} Restaurant',
-            'provider': provider
-        }
+    email = f'social.user+{provider}@restaurant-ai.local'
+    user = User.query.filter_by(email=email).first()
     
-    session['user'] = email
-    session['name'] = users_db[email]['name']
-    session['restaurant'] = users_db[email]['restaurant']
+    if not user:
+        user = User(
+            email=email,
+            first_name=provider.capitalize(),
+            last_name='User',
+            restaurant_name=f'{provider.capitalize()} Restaurant'
+        )
+        # OAuth users have no password
+        user.password_hash = ''
+        db.session.add(user)
+        
+        # Create default location
+        location = Location(user_id=user.id, country='US')
+        location.set_units(UNIT_STANDARDS.get('US', {}))
+        db.session.add(location)
+        
+        db.session.commit()
+    
+    session['user'] = user.email
+    session['name'] = user.get_full_name()
+    session['restaurant'] = user.restaurant_name
+    
+    if user.location:
+        session['location'] = user.location.to_dict()
+        session['units'] = user.location.get_units()
+    else:
+        session['location'] = {}
+        session['units'] = UNIT_STANDARDS.get('US', {})
     
     return redirect(url_for('dashboard'))
 
@@ -499,16 +553,20 @@ def dashboard_stats():
 @login_required
 @app.route("/api/forecast", methods=["POST"])
 def api_forecast():
-    """API endpoint for getting forecast data"""
+    """API endpoint for getting forecast data with time horizon support"""
     try:
         data = request.get_json()
         ingredient = data.get("ingredient")
         current_stock = float(data.get("current_stock", 0))
         lead_time_days = int(data.get("lead_time_days", 3))
         service_level = float(data.get("service_level", 0.95))
+        days_ahead = int(data.get("days_ahead", 7))  # Time horizon: 7, 14, or 30 days
         
         if not ingredient:
             return jsonify({"success": False, "error": "Ingredient is required"}), 400
+        
+        if days_ahead not in [7, 14, 30]:
+            return jsonify({"success": False, "error": "days_ahead must be 7, 14, or 30"}), 400
         
         df = pd.read_csv(DATA_PATH)
         ingredient_df = df[df["ingredient"] == ingredient].copy()
@@ -519,7 +577,8 @@ def api_forecast():
         ingredient_df["date"] = pd.to_datetime(ingredient_df["date"])
         ingredient_df = ingredient_df.sort_values("date")
         
-        forecast = forecast_demand(ingredient_df)
+        # Generate forecast with specified time horizon
+        forecast = forecast_demand(ingredient_df, periods=days_ahead)
         decision = optimize_inventory(
             forecast=forecast,
             current_stock=current_stock,
@@ -535,26 +594,192 @@ def api_forecast():
         last_date = ingredient_df["date"].max()
         forecast_labels = [
             (last_date + pd.Timedelta(days=i)).strftime("%Y-%m-%d")
-            for i in range(1, 8)
+            for i in range(1, days_ahead + 1)
         ]
-        forecast_values = [forecast["avg_daily"]] * 7
         
         return jsonify({
             "success": True,
             "ingredient": ingredient,
+            "days_ahead": days_ahead,
             "forecast": forecast,
             "decision": decision,
             "alerts": alerts,
             "chart_data": {
                 "labels": chart_labels + forecast_labels,
-                "historical": chart_sales + [None] * len(forecast_values),
-                "forecast": [None] * len(chart_sales) + forecast_values
+                "historical": chart_sales + [None] * len(forecast_labels),
+                "forecast": [None] * len(chart_sales) + forecast.get("predictions", [forecast["avg_daily"]] * days_ahead),
+                "upper_bound": [None] * len(chart_sales) + (forecast.get("upper_bound") or []),
+                "lower_bound": [None] * len(chart_sales) + (forecast.get("lower_bound") or [])
             }
         })
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
-@login_required
 
+
+@app.route("/api/forecast-batch", methods=["POST"])
+def api_forecast_batch():
+    """API endpoint for batch forecasting multiple ingredients"""
+    try:
+        data = request.get_json()
+        ingredients = data.get("ingredients", [])
+        days_ahead = int(data.get("days_ahead", 7))
+        current_stocks = data.get("current_stocks", {})
+        lead_time_days = int(data.get("lead_time_days", 3))
+        service_level = float(data.get("service_level", 0.95))
+        
+        if not ingredients:
+            return jsonify({"success": False, "error": "At least one ingredient is required"}), 400
+        
+        if days_ahead not in [7, 14, 30]:
+            return jsonify({"success": False, "error": "days_ahead must be 7, 14, or 30"}), 400
+        
+        df = pd.read_csv(DATA_PATH)
+        results = []
+        
+        for ingredient in ingredients:
+            try:
+                ingredient_df = df[df["ingredient"] == ingredient].copy()
+                
+                if ingredient_df.empty:
+                    results.append({
+                        "ingredient": ingredient,
+                        "success": False,
+                        "error": f"No data found for {ingredient}"
+                    })
+                    continue
+                
+                ingredient_df["date"] = pd.to_datetime(ingredient_df["date"])
+                ingredient_df = ingredient_df.sort_values("date")
+                
+                current_stock = float(current_stocks.get(ingredient, 0))
+                forecast = forecast_demand(ingredient_df, periods=days_ahead)
+                decision = optimize_inventory(
+                    forecast=forecast,
+                    current_stock=current_stock,
+                    lead_time_days=lead_time_days,
+                    service_level=service_level,
+                )
+                alerts = generate_alerts(decision)
+                
+                # Generate chart data
+                last_date = ingredient_df["date"].max()
+                forecast_labels = [
+                    (last_date + pd.Timedelta(days=i)).strftime("%Y-%m-%d")
+                    for i in range(1, days_ahead + 1)
+                ]
+                
+                results.append({
+                    "ingredient": ingredient,
+                    "success": True,
+                    "forecast": forecast,
+                    "decision": decision,
+                    "alerts": alerts,
+                    "forecast_labels": forecast_labels
+                })
+            except Exception as e:
+                results.append({
+                    "ingredient": ingredient,
+                    "success": False,
+                    "error": str(e)
+                })
+        
+        return jsonify({
+            "success": True,
+            "days_ahead": days_ahead,
+            "results": results
+        })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/upload-csv", methods=["POST"])
+def api_upload_csv():
+    """API endpoint for uploading CSV training data"""
+    try:
+        if "file" not in request.files:
+            return jsonify({"success": False, "error": "No file provided"}), 400
+        
+        file = request.files["file"]
+        
+        if file.filename == "":
+            return jsonify({"success": False, "error": "No file selected"}), 400
+        
+        if not file.filename.endswith(".csv"):
+            return jsonify({"success": False, "error": "File must be a CSV"}), 400
+        
+        # Read and validate CSV
+        df = pd.read_csv(file)
+        
+        required_columns = ["date", "ingredient", "quantity_sold"]
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        
+        if missing_columns:
+            return jsonify({
+                "success": False,
+                "error": f"Missing required columns: {', '.join(missing_columns)}. Required: date, ingredient, quantity_sold"
+            }), 400
+        
+        # Validate date format
+        try:
+            df["date"] = pd.to_datetime(df["date"])
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"Invalid date format. Use YYYY-MM-DD format. Error: {str(e)}"
+            }), 400
+        
+        # Validate quantity_sold is numeric
+        if not pd.api.types.is_numeric_dtype(df["quantity_sold"]):
+            try:
+                df["quantity_sold"] = pd.to_numeric(df["quantity_sold"])
+            except:
+                return jsonify({
+                    "success": False,
+                    "error": "quantity_sold column must contain numeric values"
+                }), 400
+        
+        # Add location column if not present
+        if "location" not in df.columns:
+            df["location"] = "Unknown"
+        
+        # Load existing data and merge
+        try:
+            existing_df = pd.read_csv(DATA_PATH)
+            existing_df["date"] = pd.to_datetime(existing_df["date"])
+            
+            # Combine and remove duplicates (keep newer data)
+            combined_df = pd.concat([existing_df, df], ignore_index=True)
+            combined_df = combined_df.drop_duplicates(
+                subset=["date", "ingredient", "location"],
+                keep="last"
+            )
+            combined_df = combined_df.sort_values("date")
+            
+            # Save back to CSV
+            combined_df.to_csv(DATA_PATH, index=False)
+            
+            return jsonify({
+                "success": True,
+                "message": "CSV uploaded and merged successfully",
+                "rows_added": len(df),
+                "total_rows": len(combined_df),
+                "ingredients": df["ingredient"].unique().tolist()
+            })
+        except FileNotFoundError:
+            # If no existing file, save as new
+            df.to_csv(DATA_PATH, index=False)
+            return jsonify({
+                "success": True,
+                "message": "CSV uploaded successfully (new file)",
+                "rows_added": len(df),
+                "total_rows": len(df),
+                "ingredients": df["ingredient"].unique().tolist()
+            })
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@login_required
 @app.route("/api/ingredient-history/<ingredient>", methods=["GET"])
 def ingredient_history(ingredient):
     """Get historical data for a specific ingredient"""
