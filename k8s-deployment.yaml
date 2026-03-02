@@ -1,0 +1,238 @@
+# Kubernetes Deployment Configuration
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: restaurant-ai
+
+---
+# ConfigMap for application configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: restaurant-ai
+data:
+  FLASK_ENV: "production"
+  LOG_LEVEL: "INFO"
+
+---
+# Secret for sensitive data (create from actual secrets)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: restaurant-ai
+type: Opaque
+stringData:
+  SECRET_KEY: "your-secret-key-here"
+  DATABASE_URL: "postgresql://user:pass@postgres:5432/restaurant_ai"
+  REDIS_URL: "redis://redis:6379/0"
+  MAIL_PASSWORD: "your-mail-password"
+  TWILIO_AUTH_TOKEN: "your-twilio-token"
+
+---
+# PostgreSQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: restaurant-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15-alpine
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: restaurant_ai
+        - name: POSTGRES_USER
+          value: restaurant_user
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DATABASE_PASSWORD
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+
+---
+# PostgreSQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: restaurant-ai
+spec:
+  ports:
+  - port: 5432
+  selector:
+    app: postgres
+
+---
+# Redis Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: restaurant-ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - name: redis
+        image: redis:7-alpine
+        ports:
+        - containerPort: 6379
+
+---
+# Redis Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: restaurant-ai
+spec:
+  ports:
+  - port: 6379
+  selector:
+    app: redis
+
+---
+# Application Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: restaurant-ai-app
+  namespace: restaurant-ai
+spec:
+  replicas: 3  # Horizontal scaling
+  selector:
+    matchLabels:
+      app: restaurant-ai
+  template:
+    metadata:
+      labels:
+        app: restaurant-ai
+    spec:
+      containers:
+      - name: app
+        image: your-registry/restaurant-ai:latest
+        ports:
+        - containerPort: 5000
+        envFrom:
+        - configMapRef:
+            name: app-config
+        env:
+        - name: SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: SECRET_KEY
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: DATABASE_URL
+        - name: REDIS_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: REDIS_URL
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 5000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 5
+
+---
+# Application Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: restaurant-ai-service
+  namespace: restaurant-ai
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 5000
+  selector:
+    app: restaurant-ai
+
+---
+# Horizontal Pod Autoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: restaurant-ai-hpa
+  namespace: restaurant-ai
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: restaurant-ai-app
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+
+---
+# PersistentVolumeClaim for database
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: restaurant-ai
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi

@@ -34,8 +34,34 @@ Thumbs.db
 # Database
 *.db
 *.sqlite
+*.sql.backup
 
 # Local cleanup/backup artifacts
 _cleanup_backup/
 *.tmp
 .tmp*
+
+# Production artifacts
+logs/
+*.log
+*.log.*
+
+# Docker volumes
+postgres_data/
+redis_data/
+
+# Kubernetes secrets (never commit actual secrets)
+k8s-secrets.yaml
+
+# Local environment overrides
+.env.local
+.env.*.local
+
+# Testing artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Build artifacts
+*.egg-info/
