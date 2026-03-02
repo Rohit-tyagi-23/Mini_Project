@@ -21,6 +21,7 @@ class User(db.Model):
     first_name = db.Column(db.String(100))
     last_name = db.Column(db.String(100))
     restaurant_name = db.Column(db.String(255))
+    role = db.Column(db.String(20), default='manager', nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -49,6 +50,7 @@ class User(db.Model):
             'email': self.email,
             'name': self.get_full_name(),
             'restaurant': self.restaurant_name,
+            'role': self.role,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'location': self.location.to_dict() if self.location else None,
             'units': json.loads(self.location.units_json) if self.location and self.location.units_json else {}

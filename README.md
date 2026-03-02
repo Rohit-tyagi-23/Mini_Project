@@ -178,7 +178,7 @@ The app works out of the box without email/SMS configuration. Basic features inc
 
 ### Advanced Setup (Email Alerts)
 
-See [ALERTS_SETUP.md](ALERTS_SETUP.md) for complete configuration:
+See [ALERTS_SETUP.md](docs\ALERTS_SETUP.md) for complete configuration:
 
 1. **Gmail Configuration**
    - Enable 2-Factor Authentication
@@ -733,8 +733,8 @@ This project is licensed under the MIT License - see [LICENSE](LICENSE) file for
 
 - 📖 [API Documentation](#api-documentation)
 - 🚀 [Quick Start](#quick-start)
-- ⚙️ [Setup Guide](ALERTS_SETUP.md)
-- 🎨 [Visual Guide](VISUAL_GUIDE.md)
+- ⚙️ [Setup Guide](docs\ALERTS_SETUP.md)
+- 🎨 [Visual Guide](docs\VISUAL_GUIDE.md)
 - 📧 Email: support@restaurantai.com
 
 ---

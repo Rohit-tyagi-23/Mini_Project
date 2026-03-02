@@ -10,6 +10,7 @@ from model import (forecast_demand, optimize_inventory, generate_alerts,
 from alerts import init_alerts
 from models import db, User, Location, SalesRecord, Forecast, AlertPreference, AlertHistory, IngredientMaster
 import json
+from sqlalchemy import inspect, text
 
 load_dotenv()
 
@@ -67,6 +68,7 @@ CONVERSION_FACTORS = {
 
 # Simple Browser fallback session map (keyed by client IP + user agent)
 simple_browser_sessions = {}
+ALLOWED_USER_ROLES = {'admin', 'manager', 'staff'}
 
 
 def get_client_key():
@@ -80,6 +82,29 @@ def is_simple_browser_request():
         return True
     user_agent = request.headers.get('User-Agent', '').lower()
     return 'vscode' in user_agent or 'electron' in user_agent
+
+
+def ensure_database_schema():
+    """Create tables and apply lightweight schema upgrades."""
+    db.create_all()
+
+    try:
+        inspector = inspect(db.engine)
+        if 'users' in inspector.get_table_names():
+            columns = {column['name'] for column in inspector.get_columns('users')}
+            if 'role' not in columns:
+                db.session.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'manager'"))
+                db.session.commit()
+
+            db.session.execute(text("UPDATE users SET role = 'manager' WHERE role IS NULL OR role = ''"))
+            db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        print(f"Schema upgrade warning: {e}")
+
+
+with app.app_context():
+    ensure_database_schema()
 
 # Login required decorator
 def login_required(f):
@@ -95,6 +120,7 @@ def login_required(f):
                     session['user'] = user.email
                     session['name'] = user.get_full_name()
                     session['restaurant'] = user.restaurant_name
+                    session['role'] = user.role or 'manager'
                     if user.location:
                         session['location'] = user.location.to_dict()
                         session['units'] = user.location.get_units()
@@ -119,17 +145,23 @@ def login():
     if request.method == "POST":
         email = request.form.get("email")
         password = request.form.get("password")
+        selected_role = (request.form.get("role") or '').strip().lower()
         latitude = request.form.get("latitude")
         longitude = request.form.get("longitude")
         country = request.form.get("country")
         city = request.form.get("city")
+
+        if selected_role not in ALLOWED_USER_ROLES:
+            return render_template("login.html", error="Please select a valid login type")
         
         # Check credentials from database
         user = User.query.filter_by(email=email).first()
-        if user and user.check_password(password):
+        user_role = (user.role if user and user.role else 'manager') if user else None
+        if user and user.check_password(password) and user_role == selected_role:
             session['user'] = user.email
             session['name'] = user.get_full_name()
             session['restaurant'] = user.restaurant_name
+            session['role'] = user_role
             
             if request.form.get('simple_session') == '1' or is_simple_browser_request():
                 simple_browser_sessions[get_client_key()] = email
@@ -166,7 +198,7 @@ def login():
             
             return redirect(url_for('dashboard'))
         else:
-            return render_template("login.html", error="Invalid email or password")
+            return render_template("login.html", error="Invalid credentials or login type")
     
     return render_template("login.html", simple_session=is_simple_browser_request())
 
@@ -179,10 +211,14 @@ def signup():
         first_name = request.form.get("first_name")
         last_name = request.form.get("last_name")
         restaurant_name = request.form.get("restaurant_name")
+        role = (request.form.get("role") or 'manager').strip().lower()
         latitude = request.form.get("latitude")
         longitude = request.form.get("longitude")
         country = request.form.get("country")
         city = request.form.get("city")
+
+        if role not in ALLOWED_USER_ROLES:
+            return render_template("signup.html", error="Please select a valid account type")
         
         # Check if user already exists
         if User.query.filter_by(email=email).first():
@@ -194,7 +230,8 @@ def signup():
                 email=email,
                 first_name=first_name,
                 last_name=last_name,
-                restaurant_name=restaurant_name
+                restaurant_name=restaurant_name,
+                role=role
             )
             user.set_password(password)
             db.session.add(user)
@@ -233,6 +270,7 @@ def signup():
             session['user'] = user.email
             session['name'] = user.get_full_name()
             session['restaurant'] = user.restaurant_name
+            session['role'] = user.role or 'manager'
             session['location'] = location.to_dict()
             session['units'] = location.get_units()
             
@@ -268,7 +306,8 @@ def guest_login():
             email='demo@restaurant.com',
             first_name='Demo',
             last_name='User',
-            restaurant_name='Demo Restaurant'
+            restaurant_name='Demo Restaurant',
+            role='staff'
         )
         demo_user.set_password('demo123')
         db.session.add(demo_user)
@@ -284,6 +323,7 @@ def guest_login():
     session['user'] = demo_user.email
     session['name'] = demo_user.get_full_name()
     session['restaurant'] = demo_user.restaurant_name
+    session['role'] = demo_user.role or 'staff'
     
     if demo_user.location:
         session['location'] = demo_user.location.to_dict()
@@ -362,7 +402,8 @@ def oauth_callback(provider):
             email=email,
             first_name=provider.capitalize(),
             last_name='User',
-            restaurant_name=f'{provider.capitalize()} Restaurant'
+            restaurant_name=f'{provider.capitalize()} Restaurant',
+            role='manager'
         )
         # OAuth users have no password
         user.password_hash = ''
@@ -378,6 +419,7 @@ def oauth_callback(provider):
     session['user'] = user.email
     session['name'] = user.get_full_name()
     session['restaurant'] = user.restaurant_name
+    session['role'] = user.role or 'manager'
     
     if user.location:
         session['location'] = user.location.to_dict()
@@ -410,9 +452,20 @@ def forecast_page():
     try:
         df = pd.read_csv(DATA_PATH)
         ingredients = sorted(df["ingredient"].unique().tolist())
-        return render_template("index.html", ingredients=ingredients, user=session.get('name'))
+        return render_template(
+            "index.html",
+            ingredients=ingredients,
+            user=session.get('name'),
+            role=session.get('role', 'manager')
+        )
     except Exception as e:
-        return render_template("index.html", ingredients=[], error=str(e), user=session.get('name'))
+        return render_template(
+            "index.html",
+            ingredients=[],
+            error=str(e),
+            user=session.get('name'),
+            role=session.get('role', 'manager')
+        )
 
 @app.route("/result", methods=["POST"])
 @login_required
@@ -693,9 +746,13 @@ def api_forecast_batch():
 
 
 @app.route("/api/upload-csv", methods=["POST"])
+@login_required
 def api_upload_csv():
     """API endpoint for uploading CSV training data"""
     try:
+        if session.get('role') != 'admin':
+            return jsonify({"success": False, "error": "Only admin can upload training data"}), 403
+
         if "file" not in request.files:
             return jsonify({"success": False, "error": "No file provided"}), 400
         

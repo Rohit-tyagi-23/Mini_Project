@@ -102,6 +102,7 @@
           </div>
         </form>
 
+        {% if role == 'admin' %}
         <!-- CSV Upload Section -->
         <div class="csv-upload-section" style="margin-top: 2rem; padding-top: 2rem; border-top: 2px solid #eee;">
           <h3><i class="fas fa-file-csv"></i> Upload Training Data</h3>
@@ -115,6 +116,7 @@
             <i class="fas fa-cloud-upload-alt"></i> Upload CSV
           </button>
         </div>
+        {% endif %}
       </div>
     </div>
 

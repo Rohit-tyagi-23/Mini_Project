@@ -34,3 +34,8 @@ Thumbs.db
 # Database
 *.db
 *.sqlite
+
+# Local cleanup/backup artifacts
+_cleanup_backup/
+*.tmp
+.tmp*
