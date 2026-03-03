@@ -6,10 +6,27 @@ Tests cover authentication, user management, dashboard, forecasts, and alerts
 import unittest
 import json
 import os
+import sys
 from datetime import datetime, timedelta
-from app import app, db, User, Location, SalesRecord, AlertPreference, Forecast
-from models import IngredientMaster
 import tempfile
+
+# Fix import conflict between app.py and app/ directory
+# Import from app.py file specifically
+import importlib.util
+spec = importlib.util.spec_from_file_location("app_module", os.path.join(os.path.dirname(__file__), "app.py"))
+app_module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(app_module)
+
+# Extract what we need from app.py
+app = app_module.app
+db = app_module.db
+User = app_module.User
+Location = app_module.Location
+SalesRecord = app_module.SalesRecord
+AlertPreference = app_module.AlertPreference
+Forecast = app_module.Forecast
+
+from models import IngredientMaster
 
 
 class RestaurantInventoryTestCase(unittest.TestCase):

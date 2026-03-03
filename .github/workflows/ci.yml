@@ -27,11 +27,11 @@ jobs:
           pip install flake8 black isort
       
       - name: Run flake8
-        run: flake8 app/ --max-line-length=120 --exclude=__pycache__,migrations
+        run: flake8 app.py models.py alerts.py tests.py --max-line-length=120 --exclude=__pycache__,migrations
         continue-on-error: true
       
       - name: Check code formatting with black
-        run: black --check app/
+        run: black --check . --exclude '/(\.git|\.venv|__pycache__|\.pytest_cache|node_modules)/'
         continue-on-error: true
 
   # Security Scanning
@@ -50,7 +50,7 @@ jobs:
           output: 'trivy-results.sarif'
       
       - name: Upload Trivy results to GitHub Security
-        uses: github/codeql-action/upload-sarif@v2
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: 'trivy-results.sarif'
 
@@ -85,7 +85,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install -r requirements.txt
-          pip install pytest pytest-cov
+          pip install pytest pytest-cov pytest-flask
       
       - name: Run tests with coverage
         env:
