@@ -19,6 +19,8 @@ tensorflow>=2.15.0
 
 # Alerts & Communication
 twilio>=9.0.0
+requests>=2.31.0
+PyJWT>=2.8.0
 
 # Production Server & Performance
 gunicorn>=21.2.0

@@ -49,7 +49,24 @@
         </div>
         {% endif %}
 
-        <form id="loginForm" action="/login" method="POST" class="auth-form">
+        {% if success %}
+        <div class="alert alert-success">
+          <i class="fas fa-check-circle"></i> {{ success }}
+        </div>
+        {% endif %}
+
+        <!-- Login Method Tabs -->
+        <div class="auth-tabs">
+          <button class="auth-tab active" onclick="switchLoginMethod('email')" id="emailTab">
+            <i class="fas fa-envelope"></i> Email Login
+          </button>
+          <button class="auth-tab" onclick="switchLoginMethod('phone')" id="phoneTab">
+            <i class="fas fa-mobile-alt"></i> Phone Login
+          </button>
+        </div>
+
+        <!-- Email Login Form -->
+        <form id="emailLoginForm" action="/login" method="POST" class="auth-form" style="display: block;">
           {% if simple_session %}
           <input type="hidden" name="simple_session" value="1" />
           {% endif %}
@@ -112,7 +129,70 @@
           </div>
 
           <button type="submit" class="btn btn-primary btn-block btn-large">
-            <i class="fas fa-sign-in-alt"></i> Sign In
+            <i class="fas fa-sign-in-alt"></i> Sign In with Email
+          </button>
+        </form>
+
+        <!-- Phone Login Form -->
+        <form id="phoneLoginForm" action="/login/phone/send-otp" method="POST" class="auth-form" style="display: none;">
+          {% if simple_session %}
+          <input type="hidden" name="simple_session" value="1" />
+          {% endif %}
+          {% if country %}
+          <input type="hidden" name="country" value="{{ country }}" />
+          {% endif %}
+          {% if city %}
+          <input type="hidden" name="city" value="{{ city }}" />
+          {% endif %}
+          
+          <div class="form-group" id="phoneNumberGroup">
+            <label for="phone_number">
+              <i class="fas fa-mobile-alt"></i> Phone Number
+            </label>
+            <input 
+              type="tel" 
+              id="phone_login" 
+              name="phone_number" 
+              placeholder="+1-555-0123" 
+              pattern="^\+?[1-9]\d{0,3}-?\d{1,14}$"
+              required
+            />
+            <small class="form-hint">
+              <i class="fas fa-info-circle"></i> Include country code
+            </small>
+          </div>
+
+          <div class="form-group">
+            <label for="phone_role">
+              <i class="fas fa-user-tag"></i> Login Type
+            </label>
+            <select id="phone_role" name="role" required>
+              <option value="">Select login type...</option>
+              <option value="admin">Admin</option>
+              <option value="manager">Manager</option>
+              <option value="staff">Staff</option>
+            </select>
+          </div>
+
+          <div class="form-group" id="otpGroup" style="display: none;">
+            <label for="otp_code">
+              <i class="fas fa-key"></i> OTP Code
+            </label>
+            <input 
+              type="text" 
+              id="otp_code" 
+              name="otp" 
+              placeholder="Enter 6-digit code" 
+              maxlength="6"
+              pattern="\d{6}"
+            />
+            <small class="form-hint">
+              <i class="fas fa-info-circle"></i> Enter the code sent to your phone
+            </small>
+          </div>
+
+          <button type="submit" class="btn btn-primary btn-block btn-large" id="phoneLoginBtn">
+            <i class="fas fa-paper-plane"></i> Send OTP
           </button>
         </form>
 
@@ -158,10 +238,139 @@
   <script src="{{ url_for('static', filename='location.js') }}"></script>
   <script src="{{ url_for('static', filename='auth.js') }}"></script>
   <script>
-    // Attach location to login form
+    // Attach location to login forms
     document.addEventListener('DOMContentLoaded', function() {
-      attachLocationToForm('loginForm');
+      attachLocationToForm('emailLoginForm');
+      attachLocationToForm('phoneLoginForm');
     });
+
+    // Switch between email and phone login
+    function switchLoginMethod(method) {
+      const emailForm = document.getElementById('emailLoginForm');
+      const phoneForm = document.getElementById('phoneLoginForm');
+      const emailTab = document.getElementById('emailTab');
+      const phoneTab = document.getElementById('phoneTab');
+
+      if (method === 'email') {
+        emailForm.style.display = 'block';
+        phoneForm.style.display = 'none';
+        emailTab.classList.add('active');
+        phoneTab.classList.remove('active');
+      } else {
+        emailForm.style.display = 'none';
+        phoneForm.style.display = 'block';
+        emailTab.classList.remove('active');
+        phoneTab.classList.add('active');
+      }
+    }
+
+    // Handle phone login OTP flow
+    let otpSent = false;
+    const phoneLoginForm = document.getElementById('phoneLoginForm');
+    
+    phoneLoginForm.addEventListener('submit', async function(e) {
+      e.preventDefault();
+      
+      const formData = new FormData(phoneLoginForm);
+      const phoneNumber = formData.get('phone_number');
+      const role = formData.get('role');
+      const otp = formData.get('otp');
+      
+      if (!otpSent) {
+        // Send OTP
+        try {
+          const response = await fetch('/login/phone/send-otp', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ phone_number: phoneNumber, role: role })
+          });
+          
+          const data = await response.json();
+          
+          if (data.success) {
+            // Show OTP input field
+            document.getElementById('phoneNumberGroup').style.display = 'none';
+            document.getElementById('otpGroup').style.display = 'block';
+            document.getElementById('phone_login').removeAttribute('required');
+            document.getElementById('otp_code').setAttribute('required', 'required');
+            document.getElementById('phoneLoginBtn').innerHTML = '<i class="fas fa-sign-in-alt"></i> Verify & Sign In';
+            otpSent = true;
+            
+            // Show success message
+            const alertDiv = document.createElement('div');
+            alertDiv.className = 'alert alert-success';
+            alertDiv.innerHTML = '<i class="fas fa-check-circle"></i> OTP sent to your phone';
+            phoneLoginForm.insertBefore(alertDiv, phoneLoginForm.firstChild);
+            setTimeout(() => alertDiv.remove(), 5000);
+          } else {
+            alert(data.error || 'Failed to send OTP');
+          }
+        } catch (error) {
+          alert('Error sending OTP. Please try again.');
+        }
+      } else {
+        // Verify OTP
+        try {
+          const response = await fetch('/login/phone/verify-otp', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ 
+              phone_number: phoneNumber, 
+              otp: otp,
+              role: role,
+              simple_session: formData.get('simple_session'),
+              country: formData.get('country'),
+              city: formData.get('city')
+            })
+          });
+          
+          const data = await response.json();
+          
+          if (data.success) {
+            window.location.href = data.redirect || '/dashboard';
+          } else {
+            alert(data.error || 'Invalid OTP');
+          }
+        } catch (error) {
+          alert('Error verifying OTP. Please try again.');
+        }
+      }
+    });
+
+    // Add CSS for tabs
+    const style = document.createElement('style');
+    style.textContent = `
+      .auth-tabs {
+        display: flex;
+        gap: 0.5rem;
+        margin-bottom: 1.5rem;
+        border-bottom: 2px solid #e5e7eb;
+      }
+      .auth-tab {
+        flex: 1;
+        padding: 0.75rem 1rem;
+        background: none;
+        border: none;
+        border-bottom: 3px solid transparent;
+        cursor: pointer;
+        font-size: 0.9rem;
+        font-weight: 500;
+        color: #6b7280;
+        transition: all 0.3s ease;
+      }
+      .auth-tab:hover {
+        color: #2563eb;
+        background: #f3f4f6;
+      }
+      .auth-tab.active {
+        color: #2563eb;
+        border-bottom-color: #2563eb;
+      }
+      .auth-tab i {
+        margin-right: 0.5rem;
+      }
+    `;
+    document.head.appendChild(style);
   </script>
 </body>
 </html>

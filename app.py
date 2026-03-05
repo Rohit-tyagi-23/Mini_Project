@@ -14,6 +14,14 @@ from models import db, User, Location, SalesRecord, Forecast, AlertPreference, A
 import json
 from sqlalchemy import inspect, text
 
+# Twilio for SMS OTP
+try:
+    from twilio.rest import Client
+    TWILIO_AVAILABLE = True
+except ImportError:
+    TWILIO_AVAILABLE = False
+    print("Warning: Twilio not installed. SMS features will be disabled. Install with: pip install twilio")
+
 load_dotenv()
 
 app = Flask(__name__)
@@ -72,6 +80,47 @@ CONVERSION_FACTORS = {
 simple_browser_sessions = {}
 ALLOWED_USER_ROLES = {'admin', 'manager', 'staff'}
 
+# OTP storage for phone authentication (in-memory)
+# Format: {phone_number: {'otp': code, 'expires': timestamp, 'role': role}}
+otp_storage = {}
+import random
+import string
+
+def generate_otp():
+    """Generate a 6-digit OTP code"""
+    return ''.join(random.choices(string.digits, k=6))
+
+def store_otp(phone_number, otp, role):
+    """Store OTP with 5-minute expiration"""
+    otp_storage[phone_number] = {
+        'otp': otp,
+        'expires': datetime.now() + timedelta(minutes=5),
+        'role': role
+    }
+
+def verify_otp(phone_number, otp):
+    """Verify OTP and check if not expired"""
+    if phone_number not in otp_storage:
+        return False
+    
+    stored = otp_storage[phone_number]
+    if datetime.now() > stored['expires']:
+        del otp_storage[phone_number]
+        return False
+    
+    if stored['otp'] == otp:
+        # OTP is valid, remove it from storage
+        del otp_storage[phone_number]
+        return True
+    
+    return False
+
+def get_otp_role(phone_number):
+    """Get the role associated with a pending OTP"""
+    if phone_number in otp_storage:
+        return otp_storage[phone_number].get('role')
+    return None
+
 
 def get_client_key():
     return f"{request.remote_addr}|{request.headers.get('User-Agent', '')}"
@@ -79,11 +128,19 @@ def get_client_key():
 
 def is_simple_browser_request():
     if request.args.get('simple') == '1':
-        return True
+        return True 
     if request.args.get('vscodeBrowserReqId'):
         return True
     user_agent = request.headers.get('User-Agent', '').lower()
     return 'vscode' in user_agent or 'electron' in user_agent
+
+
+def get_current_user():
+    """Get currently logged-in user from session."""
+    user_email = session.get('user')
+    if not user_email:
+        return None
+    return User.query.filter_by(email=user_email).first()
 
 
 def ensure_database_schema():
@@ -94,9 +151,18 @@ def ensure_database_schema():
         inspector = inspect(db.engine)
         if 'users' in inspector.get_table_names():
             columns = {column['name'] for column in inspector.get_columns('users')}
+            
+            # Add role column if missing
             if 'role' not in columns:
                 db.session.execute(text("ALTER TABLE users ADD COLUMN role VARCHAR(20) DEFAULT 'manager'"))
                 db.session.commit()
+                print("✓ Added 'role' column to users table")
+
+            # Add phone_number column if missing
+            if 'phone_number' not in columns:
+                db.session.execute(text("ALTER TABLE users ADD COLUMN phone_number VARCHAR(20)"))
+                db.session.commit()
+                print("✓ Added 'phone_number' column to users table")
 
             db.session.execute(text("UPDATE users SET role = 'manager' WHERE role IS NULL OR role = ''"))
             db.session.commit()
@@ -213,6 +279,7 @@ def signup():
     if request.method == "POST":
         email = request.form.get("email")
         password = request.form.get("password")
+        phone_number = request.form.get("phone_number")
         first_name = request.form.get("first_name")
         last_name = request.form.get("last_name")
         restaurant_name = request.form.get("restaurant_name")
@@ -229,10 +296,15 @@ def signup():
         if User.query.filter_by(email=email).first():
             return render_template("signup.html", error="Email already registered")
         
+        # Check if phone number already exists
+        if phone_number and User.query.filter_by(phone_number=phone_number).first():
+            return render_template("signup.html", error="Phone number already registered")
+        
         try:
             # Create new user
             user = User(
                 email=email,
+                phone_number=phone_number,
                 first_name=first_name,
                 last_name=last_name,
                 restaurant_name=restaurant_name,
@@ -257,11 +329,13 @@ def signup():
             
             db.session.add(location)
             
-            # Create default alert preferences
+            # Create default alert preferences with auto-synced email and phone
             alert_prefs = AlertPreference(
                 user_id=user.id,
                 email_enabled=True,
                 email_address=email,
+                sms_enabled=bool(phone_number),  # Enable SMS if phone number provided
+                phone_number=phone_number,  # Auto-sync phone number
                 threshold_percentage=25
             )
             db.session.add(alert_prefs)
@@ -292,6 +366,160 @@ def signup():
     city = request.args.get('city')
     return render_template("signup.html", simple_session=is_simple_browser_request(), country=country, city=city)
 
+@app.route("/login/phone/send-otp", methods=["POST"])
+def send_phone_otp():
+    """Send OTP to phone number for login"""
+    try:
+        data = request.get_json()
+        phone_number = data.get('phone_number')
+        role = (data.get('role') or '').strip().lower()
+        
+        if not phone_number:
+            return jsonify({'success': False, 'error': 'Phone number is required'}), 400
+        
+        if role not in ALLOWED_USER_ROLES:
+            return jsonify({'success': False, 'error': 'Invalid login type'}), 400
+        
+        # Check if user exists with this phone number and role
+        user = User.query.filter_by(phone_number=phone_number).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'Phone number not registered'}), 404
+        
+        user_role = (user.role if user and user.role else 'manager')
+        if user_role != role:
+            return jsonify({'success': False, 'error': 'Invalid phone number or login type'}), 401
+        
+        # Generate and store OTP
+        otp = generate_otp()
+        store_otp(phone_number, otp, role)
+        
+        # Send OTP via SMS using Twilio
+        sms_sent = False
+        sms_error = None
+        
+        if TWILIO_AVAILABLE:
+            twilio_sid = os.getenv('TWILIO_ACCOUNT_SID')
+            twilio_token = os.getenv('TWILIO_AUTH_TOKEN')
+            twilio_phone = os.getenv('TWILIO_PHONE_NUMBER')
+            
+            if twilio_sid and twilio_token and twilio_phone:
+                try:
+                    client = Client(twilio_sid, twilio_token)
+                    message = client.messages.create(
+                        body=f"Your Restaurant Inventory AI login code is: {otp}. Valid for 5 minutes.",
+                        from_=twilio_phone,
+                        to=phone_number
+                    )
+                    sms_sent = True
+                    print(f"✓ SMS sent to {phone_number} (SID: {message.sid})")
+                except Exception as e:
+                    sms_error = str(e)
+                    print(f"✗ Failed to send SMS to {phone_number}: {e}")
+            else:
+                print("⚠ Twilio credentials not configured in .env file")
+        
+        # For development or when SMS fails, log OTP to console
+        if not sms_sent:
+            print(f"\n{'='*50}")
+            print(f"📱 OTP for {phone_number}: {otp}")
+            print(f"⏰ Valid for 5 minutes")
+            print(f"{'='*50}\n")
+        
+        response_data = {
+            'success': True, 
+            'message': 'OTP sent successfully' if sms_sent else 'OTP generated (check console)',
+        }
+        
+        # Include OTP in response only in development mode (DEBUG=True)
+        if app.debug:
+            response_data['otp'] = otp
+            response_data['dev_mode'] = True
+        
+        if sms_error:
+            response_data['sms_error'] = sms_error
+        
+        return jsonify(response_data)
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route("/login/phone/verify-otp", methods=["POST"])
+def verify_phone_otp():
+    """Verify OTP and login user"""
+    try:
+        data = request.get_json()
+        phone_number = data.get('phone_number')
+        otp = data.get('otp')
+        role = (data.get('role') or '').strip().lower()
+        latitude = data.get('latitude')
+        longitude = data.get('longitude')
+        country = data.get('country')
+        city = data.get('city')
+        
+        if not phone_number or not otp:
+            return jsonify({'success': False, 'error': 'Phone number and OTP are required'}), 400
+        
+        # Verify OTP
+        if not verify_otp(phone_number, otp):
+            return jsonify({'success': False, 'error': 'Invalid or expired OTP'}), 401
+        
+        # Get user by phone number
+        user = User.query.filter_by(phone_number=phone_number).first()
+        if not user:
+            return jsonify({'success': False, 'error': 'User not found'}), 404
+        
+        user_role = (user.role if user and user.role else 'manager')
+        if user_role != role:
+            return jsonify({'success': False, 'error': 'Invalid login type'}), 401
+        
+        # Login successful - create session
+        session['user'] = user.email
+        session['name'] = user.get_full_name()
+        session['restaurant'] = user.restaurant_name
+        session['role'] = user_role
+        
+        if data.get('simple_session') == '1' or is_simple_browser_request():
+            simple_browser_sessions[get_client_key()] = user.email
+        
+        # Update location if provided
+        if country or (latitude and longitude):
+            location = user.location
+            if not location:
+                location = Location(user_id=user.id)
+                db.session.add(location)
+            
+            if country:
+                location.country = country
+                location.city = city or ''
+                location.set_units(UNIT_STANDARDS.get(country, UNIT_STANDARDS.get('US', {})))
+                session['units'] = location.get_units()
+            
+            if latitude and longitude:
+                location.latitude = float(latitude)
+                location.longitude = float(longitude)
+            
+            db.session.commit()
+            session['location'] = location.to_dict()
+            if not country:
+                session['units'] = location.get_units() or UNIT_STANDARDS.get('US', {})
+        else:
+            # Use stored location or default
+            if user.location:
+                session['location'] = user.location.to_dict()
+                session['units'] = user.location.get_units()
+            else:
+                session['location'] = {}
+                session['units'] = UNIT_STANDARDS.get('US', {})
+        
+        return jsonify({
+            'success': True,
+            'message': 'Login successful',
+            'redirect': url_for('dashboard')
+        })
+    
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route("/logout")
 def logout():
     """Logout user"""
@@ -319,6 +547,7 @@ def guest_login():
         )
         demo_user.set_password('demo123')
         db.session.add(demo_user)
+        db.session.flush()
         
         location = Location(user_id=demo_user.id, country='US')
         location.set_units(UNIT_STANDARDS.get('US', {}))
@@ -374,23 +603,44 @@ def oauth_login(provider):
     if provider not in oauth_urls:
         return redirect(url_for('login'))
     
-    # OAuth parameters (these would need to be configured with actual client IDs)
+    # Get OAuth credentials from environment
+    oauth_credentials = {
+        'google': {
+            'client_id': os.getenv('GOOGLE_CLIENT_ID'),
+            'client_secret': os.getenv('GOOGLE_CLIENT_SECRET'),
+        },
+        'microsoft': {
+            'client_id': os.getenv('MICROSOFT_CLIENT_ID'),
+            'client_secret': os.getenv('MICROSOFT_CLIENT_SECRET'),
+        },
+        'apple': {
+            'client_id': os.getenv('APPLE_CLIENT_ID'),
+            'client_secret': os.getenv('APPLE_CLIENT_SECRET'),
+        }
+    }
+    
+    # Check if credentials are configured
+    creds = oauth_credentials.get(provider)
+    if not creds or not creds['client_id'] or 'your-' in creds['client_id']:
+        return redirect(url_for('login', error=f'{provider.capitalize()} OAuth not configured yet'))
+    
+    # OAuth parameters
     params = {
         'google': {
-            'client_id': 'YOUR_GOOGLE_CLIENT_ID',
-            'redirect_uri': request.url_root + 'auth/callback/google',
+            'client_id': creds['client_id'],
+            'redirect_uri': request.url_root.rstrip('/') + url_for('oauth_callback', provider='google'),
             'response_type': 'code',
             'scope': 'openid email profile'
         },
         'microsoft': {
-            'client_id': 'YOUR_MICROSOFT_CLIENT_ID',
-            'redirect_uri': request.url_root + 'auth/callback/microsoft',
+            'client_id': creds['client_id'],
+            'redirect_uri': request.url_root.rstrip('/') + url_for('oauth_callback', provider='microsoft'),
             'response_type': 'code',
             'scope': 'openid email profile'
         },
         'apple': {
-            'client_id': 'YOUR_APPLE_CLIENT_ID',
-            'redirect_uri': request.url_root + 'auth/callback/apple',
+            'client_id': creds['client_id'],
+            'redirect_uri': request.url_root.rstrip('/') + url_for('oauth_callback', provider='apple'),
             'response_type': 'code',
             'scope': 'email name'
         }
@@ -405,52 +655,137 @@ def oauth_login(provider):
 @app.route("/auth/callback/<provider>")
 def oauth_callback(provider):
     """OAuth callback endpoint"""
+    import requests
+    import jwt
+    
     code = request.args.get('code')
     error = request.args.get('error')
     
     if error:
         return redirect(url_for('login', error=f'Social login failed: {error}'))
     
-    # In production, you would:
-    # 1. Exchange code for access token
-    # 2. Get user info from provider
-    # 3. Create or update user in database
-    # 4. Set session
+    if not code:
+        return redirect(url_for('login', error='No authorization code received'))
     
-    # For demo purposes, create a mock social user
-    email = f'social.user+{provider}@restaurant-ai.local'
-    user = User.query.filter_by(email=email).first()
+    # Get OAuth credentials from environment
+    oauth_credentials = {
+        'google': {
+            'client_id': os.getenv('GOOGLE_CLIENT_ID'),
+            'client_secret': os.getenv('GOOGLE_CLIENT_SECRET'),
+            'token_url': 'https://oauth2.googleapis.com/token'
+        },
+        'microsoft': {
+            'client_id': os.getenv('MICROSOFT_CLIENT_ID'),
+            'client_secret': os.getenv('MICROSOFT_CLIENT_SECRET'),
+            'token_url': 'https://login.microsoftonline.com/common/oauth2/v2.0/token'
+        },
+        'apple': {
+            'client_id': os.getenv('APPLE_CLIENT_ID'),
+            'client_secret': os.getenv('APPLE_CLIENT_SECRET'),
+            'token_url': 'https://appleid.apple.com/auth/oauth2/token'
+        }
+    }
     
-    if not user:
-        user = User(
-            email=email,
-            first_name=provider.capitalize(),
-            last_name='User',
-            restaurant_name=f'{provider.capitalize()} Restaurant',
-            role='manager'
-        )
-        # OAuth users have no password
-        user.password_hash = ''
-        db.session.add(user)
+    creds = oauth_credentials.get(provider)
+    if not creds or not creds['client_id']:
+        return redirect(url_for('login', error=f'{provider.capitalize()} OAuth not configured'))
+    
+    try:
+        # Exchange authorization code for access token
+        token_data = {
+            'client_id': creds['client_id'],
+            'client_secret': creds['client_secret'],
+            'code': code,
+            'redirect_uri': request.url_root.rstrip('/') + url_for('oauth_callback', provider=provider),
+            'grant_type': 'authorization_code'
+        }
         
-        # Create default location
-        location = Location(user_id=user.id, country='US')
-        location.set_units(UNIT_STANDARDS.get('US', {}))
-        db.session.add(location)
+        token_response = requests.post(creds['token_url'], data=token_data, timeout=10)
+        token_response.raise_for_status()
+        token_info = token_response.json()
         
-        db.session.commit()
+        # Get user info from provider
+        user_info = None
+        
+        if provider == 'google':
+            userinfo_response = requests.get(
+                'https://openidconnect.googleapis.com/v1/userinfo',
+                headers={'Authorization': f"Bearer {token_info.get('access_token')}"},
+                timeout=10
+            )
+            userinfo_response.raise_for_status()
+            user_info = userinfo_response.json()
+        
+        elif provider == 'microsoft':
+            userinfo_response = requests.get(
+                'https://graph.microsoft.com/v1.0/me',
+                headers={'Authorization': f"Bearer {token_info.get('access_token')}"},
+                timeout=10
+            )
+            userinfo_response.raise_for_status()
+            user_info = userinfo_response.json()
+        
+        elif provider == 'apple':
+            try:
+                decoded = jwt.decode(token_info.get('id_token', ''), options={"verify_signature": False})
+                user_info = decoded
+            except:
+                user_info = {'email': 'apple.user@icloud.com', 'given_name': 'Apple', 'family_name': 'User'}
+        
+        if not user_info:
+            return redirect(url_for('login', error='Failed to get user information from ' + provider))
+        
+        # Extract email and name
+        email = user_info.get('email') or user_info.get('mail') or user_info.get('preferred_username')
+        first_name = user_info.get('given_name') or user_info.get('givenName') or provider.capitalize()
+        last_name = user_info.get('family_name') or user_info.get('surname') or 'User'
+        
+        if not email:
+            return redirect(url_for('login', error='Could not retrieve email from ' + provider))
+        
+        # Find or create user
+        user = User.query.filter_by(email=email).first()
+        
+        if not user:
+            user = User(
+                email=email,
+                first_name=first_name,
+                last_name=last_name,
+                restaurant_name=f'{first_name} Restaurant',
+                role='manager'
+            )
+            # OAuth users have no password
+            user.password_hash = ''
+            db.session.add(user)
+            db.session.flush()
+            
+            # Create default location
+            location = Location(user_id=user.id, country='US')
+            location.set_units(UNIT_STANDARDS.get('US', {}))
+            db.session.add(location)
+            
+            db.session.commit()
+        
+        # Set session
+        session['user'] = user.email
+        session['name'] = user.get_full_name()
+        session['restaurant'] = user.restaurant_name
+        session['role'] = user.role or 'manager'
+        
+        if user.location:
+            session['location'] = user.location.to_dict()
+            session['units'] = user.location.get_units()
+        else:
+            session['location'] = {}
+            session['units'] = UNIT_STANDARDS.get('US', {})
+        
+        return redirect(url_for('dashboard'))
     
-    session['user'] = user.email
-    session['name'] = user.get_full_name()
-    session['restaurant'] = user.restaurant_name
-    session['role'] = user.role or 'manager'
-    
-    if user.location:
-        session['location'] = user.location.to_dict()
-        session['units'] = user.location.get_units()
-    else:
-        session['location'] = {}
-        session['units'] = UNIT_STANDARDS.get('US', {})
+    except requests.RequestException as e:
+        return redirect(url_for('login', error=f'OAuth error: {str(e)}'))
+    except Exception as e:
+        print(f'OAuth callback error: {str(e)}')
+        return redirect(url_for('login', error='Authentication failed with ' + provider))
     
     return redirect(url_for('dashboard'))
 
@@ -475,7 +810,19 @@ def dashboard():
 def forecast_page():
     try:
         df = pd.read_csv(DATA_PATH)
-        ingredients = sorted(df["ingredient"].unique().tolist())
+        csv_ingredients = set(df["ingredient"].dropna().astype(str).str.strip().tolist())
+
+        user = get_current_user()
+        db_ingredients = set()
+        if user:
+            db_items = IngredientMaster.query.filter_by(user_id=user.id).all()
+            db_ingredients = {
+                (item.ingredient or '').strip()
+                for item in db_items
+                if item.ingredient and item.ingredient.strip()
+            }
+
+        ingredients = sorted(csv_ingredients.union(db_ingredients))
         return render_template(
             "index.html",
             ingredients=ingredients,
@@ -589,9 +936,50 @@ def get_ingredients():
     """API endpoint to get all ingredients"""
     try:
         df = pd.read_csv(DATA_PATH)
-        ingredients = sorted(df["ingredient"].unique().tolist())
+        csv_ingredients = set(df["ingredient"].dropna().astype(str).str.strip().tolist())
+
+        user = get_current_user()
+        db_ingredients = set()
+        if user:
+            db_items = IngredientMaster.query.filter_by(user_id=user.id).all()
+            db_ingredients = {
+                (item.ingredient or '').strip()
+                for item in db_items
+                if item.ingredient and item.ingredient.strip()
+            }
+
+        ingredients = sorted(csv_ingredients.union(db_ingredients))
         return jsonify({"success": True, "ingredients": ingredients})
     except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@login_required
+@app.route("/api/inventory/items", methods=["POST"])
+def add_inventory_item():
+    """Add a custom inventory item for the current user."""
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "User not authenticated"}), 401
+
+        data = request.get_json() or {}
+        ingredient = (data.get("ingredient") or "").strip()
+
+        if not ingredient:
+            return jsonify({"success": False, "error": "Ingredient name is required"}), 400
+
+        existing_item = IngredientMaster.query.filter_by(user_id=user.id, ingredient=ingredient).first()
+        if existing_item:
+            return jsonify({"success": True, "message": "Ingredient already exists", "ingredient": ingredient})
+
+        new_item = IngredientMaster(user_id=user.id, ingredient=ingredient)
+        db.session.add(new_item)
+        db.session.commit()
+
+        return jsonify({"success": True, "message": "Ingredient added", "ingredient": ingredient})
+    except Exception as e:
+        db.session.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
 
 @login_required
@@ -1005,11 +1393,13 @@ def convert_units():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@login_required
+@app.route("/api/add-sale", methods=["POST"])
 def add_sale():
     """Add a new sales record"""
     try:
         data = request.get_json()
-        ingredient = data.get("ingredient")
+        ingredient = (data.get("ingredient") or '').strip()
         date = data.get("date")
         quantity = data.get("quantity")
         
@@ -1018,9 +1408,30 @@ def add_sale():
         
         # Validate date format
         try:
-            datetime.strptime(date, "%Y-%m-%d")
+            parsed_date = datetime.strptime(date, "%Y-%m-%d").date()
         except ValueError:
             return jsonify({"success": False, "error": "Invalid date format. Use YYYY-MM-DD"}), 400
+
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "User not authenticated"}), 401
+
+        quantity_value = float(quantity)
+
+        # Ensure ingredient exists in user's inventory list
+        inventory_item = IngredientMaster.query.filter_by(user_id=user.id, ingredient=ingredient).first()
+        if not inventory_item:
+            inventory_item = IngredientMaster(user_id=user.id, ingredient=ingredient)
+            db.session.add(inventory_item)
+
+        # Save in relational DB
+        sales_record = SalesRecord(
+            user_id=user.id,
+            ingredient=ingredient,
+            quantity_sold=quantity_value,
+            sale_date=parsed_date,
+        )
+        db.session.add(sales_record)
         
         # Read existing data
         df = pd.read_csv(DATA_PATH)
@@ -1029,14 +1440,17 @@ def add_sale():
         new_record = pd.DataFrame([{
             "date": date,
             "ingredient": ingredient,
-            "quantity_sold": float(quantity)
+            "quantity_sold": quantity_value
         }])
         
         df = pd.concat([df, new_record], ignore_index=True)
         df.to_csv(DATA_PATH, index=False)
+
+        db.session.commit()
         
         return jsonify({"success": True, "message": "Sale added successfully"})
     except Exception as e:
+        db.session.rollback()
         return jsonify({"success": False, "error": str(e)}), 500
 
 @login_required

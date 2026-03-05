@@ -16,6 +16,7 @@ class ForecastManager {
     this.currentLocation = null;
     this.selectedIngredients = [];
     this.initializeEventListeners();
+    this.initSearchableSelects();
   }
 
   /**
@@ -59,6 +60,50 @@ class ForecastManager {
     if (resetBtn) {
       resetBtn.addEventListener('click', () => this.resetForm());
     }
+  }
+
+  /**
+   * Make select elements searchable by typing
+   */
+  initSearchableSelects() {
+    const selects = document.querySelectorAll('.searchable-select');
+    
+    selects.forEach(select => {
+      let searchTimeout;
+      let searchString = '';
+      
+      select.addEventListener('keydown', (e) => {
+        const char = String.fromCharCode(e.which).toLowerCase();
+        
+        // Only process alphanumeric characters
+        if (/[a-z0-9]/i.test(char)) {
+          e.preventDefault();
+          
+          // Reset search string after 500ms of inactivity
+          clearTimeout(searchTimeout);
+          searchString += char;
+          
+          // Find matching option
+          const options = Array.from(select.options);
+          for (let option of options) {
+            if (option.value === '') continue; // Skip empty option
+            if (option.textContent.toLowerCase().startsWith(searchString)) {
+              select.value = option.value;
+              break;
+            }
+          }
+          
+          // Reset search string after timeout
+          searchTimeout = setTimeout(() => {
+            searchString = '';
+          }, 500);
+        }
+        // Allow arrow keys and enter to work normally
+        else if ([13, 27, 38, 40].includes(e.which)) {
+          searchString = '';
+        }
+      });
+    });
   }
 
   /**

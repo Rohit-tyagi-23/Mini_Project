@@ -18,6 +18,7 @@ class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(255), unique=True, nullable=False, index=True)
     password_hash = db.Column(db.String(255), nullable=False)
+    phone_number = db.Column(db.String(20), unique=True, index=True)  # E.164 format: +1-555-0123
     first_name = db.Column(db.String(100))
     last_name = db.Column(db.String(100))
     restaurant_name = db.Column(db.String(255))

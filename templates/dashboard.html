@@ -52,8 +52,8 @@
         <button class="btn btn-secondary" onclick="showAddSaleModal()">
           <i class="fas fa-plus"></i> Add Sale
         </button>
-        <button class="btn btn-primary" onclick="window.location.href='/forecast'">
-          <i class="fas fa-chart-line"></i> New Forecast
+        <button class="btn btn-primary" onclick="showAddItemModal()">
+          <i class="fas fa-box"></i> ADD ITEM
         </button>
       </div>
     </header>
@@ -163,8 +163,8 @@
         <form id="addSaleForm">
           <div class="form-group">
             <label for="sale-ingredient">Ingredient</label>
-            <select id="sale-ingredient" required>
-              <option value="">Select ingredient...</option>
+            <select id="sale-ingredient" class="searchable-select" required>
+              <option value="">Search or select...</option>
             </select>
           </div>
 
@@ -181,6 +181,29 @@
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" onclick="closeAddSaleModal()">Cancel</button>
             <button type="submit" class="btn btn-primary">Add Sale</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Item Modal -->
+  <div id="addItemModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Add Inventory Item</h2>
+        <span class="close" onclick="closeAddItemModal()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <form id="addItemForm">
+          <div class="form-group">
+            <label for="item-name">Item Name</label>
+            <input type="text" id="item-name" placeholder="Enter item name" required />
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" onclick="closeAddItemModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">ADD ITEM</button>
           </div>
         </form>
       </div>

@@ -53,13 +53,13 @@
         <form id="forecast-form" method="POST">
           <div class="form-row">
             <div class="form-group">
-              <label for="forecast-ingredient"><i class="fas fa-box"></i> Ingredient(s)</label>
-              <select name="ingredient" id="forecast-ingredient" multiple size="5" required>
+              <label for="forecast-ingredient"><i class="fas fa-box"></i> Ingredient</label>
+              <select name="ingredient" id="forecast-ingredient" class="searchable-select" required>
+                <option value="" selected disabled>Search or select...</option>
                 {% for ingredient in ingredients %}
                   <option value="{{ ingredient }}">{{ ingredient }}</option>
                 {% endfor %}
               </select>
-              <small>Hold Ctrl/Cmd to select multiple ingredients</small>
             </div>
 
             <div class="form-group">
