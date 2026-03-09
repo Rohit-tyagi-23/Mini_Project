@@ -8,6 +8,7 @@ from app.config import config
 import logging
 from logging.handlers import RotatingFileHandler
 import os
+import re
 
 
 def create_app(config_name='development'):
@@ -35,13 +36,13 @@ def create_app(config_name='development'):
     # Configure logging
     configure_logging(app)
     
+    # Validate security configuration
+    validate_security_config(app, config_name)
+    
     # Register blueprints
-    from app.routes import auth_bp, dashboard_bp, forecast_bp, alerts_bp, api_bp, health_bp
-    app.register_blueprint(auth_bp)
-    app.register_blueprint(dashboard_bp)
-    app.register_blueprint(forecast_bp)
-    app.register_blueprint(alerts_bp)
-    app.register_blueprint(api_bp, url_prefix='/api/v1')
+    # Note: Most routes are currently in app.py
+    # Future: Move routes to modular blueprints
+    from app.routes import health_bp
     app.register_blueprint(health_bp)
     
     # Initialize database schema
@@ -60,6 +61,83 @@ def create_app(config_name='development'):
     app.logger.info(f'Application started in {config_name} mode')
     
     return app
+
+
+def validate_security_config(app, config_name):
+    """
+    Validate critical security configuration.
+    Issues warnings for weak settings in production.
+    """
+    logger = app.logger
+    
+    if config_name == 'production':
+        logger.info('=' * 60)
+        logger.info('PRODUCTION SECURITY VALIDATION')
+        logger.info('=' * 60)
+        
+        # Check SECRET_KEY
+        secret_key = app.config.get('SECRET_KEY')
+        if not secret_key or secret_key == 'dev-key-change-in-production':
+            logger.error('❌ CRITICAL: SECRET_KEY not properly set for production!')
+            logger.error('   Set environment variable: export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")')
+            raise ValueError("CRITICAL: SECRET_KEY must be set to a strong random value in production!")
+        elif len(secret_key) < 32:
+            logger.warning(f'⚠️  WARNING: SECRET_KEY is only {len(secret_key)} characters. Recommend 64+ characters.')
+        else:
+            logger.info('✓ SECRET_KEY is properly configured (32+ characters)')
+        
+        # Check DATABASE_URL
+        db_url = app.config.get('SQLALCHEMY_DATABASE_URI')
+        if db_url and 'sqlite' in db_url:
+            logger.error('❌ CRITICAL: SQLite database configured for production!')
+            logger.error('   Configure PostgreSQL instead:')
+            logger.error('   export DATABASE_URL="postgresql://user:password@host:5432/database"')
+            raise ValueError("CRITICAL: SQLite cannot be used in production. Use PostgreSQL!")
+        elif db_url and ':changeme@' in db_url:
+            logger.warning('⚠️  WARNING: Database password appears to be default value')
+        elif db_url:
+            logger.info('✓ PostgreSQL database configured')
+        
+        # Check REDIS_URL
+        redis_url = app.config.get('RATELIMIT_STORAGE_URL')
+        if redis_url == 'memory://':
+            logger.warning('⚠️  WARNING: Rate limiting using in-memory storage (not persistent)')
+            logger.warning('   Configure Redis:')
+            logger.warning('   export REDIS_URL="redis://localhost:6379/0"')
+        elif redis_url:
+            logger.info('✓ Redis cache configured')
+        
+        # Check MAIL configuration
+        mail_username = app.config.get('MAIL_USERNAME')
+        if not mail_username:
+            logger.warning('⚠️  WARNING: MAIL_USERNAME not configured. Email notifications disabled.')
+        else:
+            logger.info(f'✓ Email configured: {mail_username}')
+        
+        # Check Flask DEBUG mode
+        if app.debug:
+            logger.error('❌ CRITICAL: DEBUG mode enabled in production!')
+            logger.error('   Set environment variable: export FLASK_ENV=production')
+            raise ValueError("CRITICAL: DEBUG mode must be disabled in production!")
+        else:
+            logger.info('✓ DEBUG mode disabled')
+        
+        # Check HTTPS/TLS enforcement
+        if not app.config.get('SESSION_COOKIE_SECURE'):
+            logger.warning('⚠️  WARNING: SESSION_COOKIE_SECURE not enabled (HTTPS required)')
+        else:
+            logger.info('✓ HTTPS cookies enforced')
+        
+        logger.info('=' * 60)
+        logger.info('Security validation complete')
+        logger.info('=' * 60)
+    
+    elif config_name == 'development':
+        logger.info('🚀 Development mode - some security features relaxed')
+        logger.info('   Remember: Never use development settings in production!')
+    
+    elif config_name == 'testing':
+        logger.info('🧪 Testing mode - security features relaxed for tests')
 
 
 def configure_logging(app):

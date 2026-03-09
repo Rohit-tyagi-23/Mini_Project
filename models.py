@@ -3,12 +3,16 @@ Database models for Restaurant Inventory AI
 Using SQLAlchemy ORM for both SQLite and PostgreSQL support
 """
 
-from flask_sqlalchemy import SQLAlchemy
+from app.extensions import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from datetime import datetime
 import json
+import re
 
-db = SQLAlchemy()
+
+class PasswordValidationError(Exception):
+    """Raised when password doesn't meet security requirements"""
+    pass
 
 
 class User(db.Model):
@@ -25,6 +29,9 @@ class User(db.Model):
     role = db.Column(db.String(20), default='manager', nullable=False, index=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_password_change = db.Column(db.DateTime)  # For password rotation tracking
+    reset_token = db.Column(db.String(255), unique=True, index=True)  # Secure password reset token
+    reset_token_expiry = db.Column(db.DateTime)  # When the reset token expires
     
     # Relationships
     location = db.relationship('Location', backref='user', uselist=False, cascade='all, delete-orphan')
@@ -32,9 +39,54 @@ class User(db.Model):
     forecasts = db.relationship('Forecast', backref='user', cascade='all, delete-orphan')
     alert_preferences = db.relationship('AlertPreference', backref='user', uselist=False, cascade='all, delete-orphan')
     
+    @staticmethod
+    def validate_password_strength(password):
+        """
+        Validate password meets security requirements.
+        
+        Requirements:
+        - Minimum 6 characters
+        - Must contain uppercase letter
+        - Must contain lowercase letter
+        - Must contain number
+        - Must contain special character
+        
+        Returns: None if valid
+        Raises: PasswordValidationError if invalid
+        """
+        if not password:
+            raise PasswordValidationError("Password is required")
+        
+        if len(password) < 6:
+            raise PasswordValidationError("Password must be at least 6 characters long")
+        
+        if not any(c.isupper() for c in password):
+            raise PasswordValidationError("Password must contain at least one uppercase letter")
+        
+        if not any(c.islower() for c in password):
+            raise PasswordValidationError("Password must contain at least one lowercase letter")
+        
+        if not any(c.isdigit() for c in password):
+            raise PasswordValidationError("Password must contain at least one number")
+        
+        if not any(c in '!@#$%^&*()_+-=[]{}|;:,.<>?' for c in password):
+            raise PasswordValidationError("Password must contain at least one special character (!@#$%^&*()_+-=[]{}|;:,.<>?)")
+        
+        return True
+    
     def set_password(self, password):
-        """Hash and set password"""
+        """
+        Hash and set password.
+        Validates password strength before hashing.
+        """
+        # Validate password strength
+        self.validate_password_strength(password)
+        
+        # Hash password with secure algorithm
         self.password_hash = generate_password_hash(password, method='pbkdf2:sha256')
+        
+        # Track password change time
+        self.last_password_change = datetime.utcnow()
     
     def check_password(self, password):
         """Verify password"""

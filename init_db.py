@@ -54,7 +54,7 @@ def seed_sample_data():
             last_name='Manager',
             restaurant_name='Demo Restaurant'
         )
-        demo_user.set_password('demo123')
+        demo_user.set_password('Demo123!@')
         db.session.add(demo_user)
         db.session.flush()
         
@@ -132,7 +132,7 @@ def seed_sample_data():
         
         db.session.commit()
         print("✓ Sample data added successfully")
-        print(f"  - Demo user: demo@restaurant.com / demo123")
+        print(f"  - Demo user: demo@restaurant.com / Demo123!@")
         print(f"  - Ingredients: {len(ingredients_data)}")
         print(f"  - Sales records: {len(sales_data)}")
 

@@ -1,102 +1,64 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-import pandas as pd
+"""
+IMPORTANT: This file should not be used directly in production.
+Use the app package and create_app() factory pattern instead.
+
+For backwards compatibility with existing scripts:
+- init_db.py
+- tests.py
+
+This module re-exports the app instance created with the proper factory pattern.
+For all new code, use:
+    from app import create_app
+    app = create_app(os.getenv('FLASK_ENV', 'development'))
+"""
+
 import os
-from datetime import datetime, timedelta
-from functools import wraps
 from dotenv import load_dotenv
-# from flask_limiter import Limiter
-# from flask_limiter.util import get_remote_address
-from model import (forecast_demand, optimize_inventory, generate_alerts, 
-                   calculate_error_metrics, generate_training_predictions, 
-                   calculate_confidence_intervals)
-from alerts import init_alerts
-from models import db, User, Location, SalesRecord, Forecast, AlertPreference, AlertHistory, IngredientMaster
-import json
-from sqlalchemy import inspect, text
+from functools import wraps
+from flask import session, request, redirect, url_for, render_template, jsonify, flash
+from datetime import datetime, timedelta
+from sqlalchemy import text
+import pandas as pd
+from model import forecast_demand
 
-# Twilio for SMS OTP
-try:
-    from twilio.rest import Client
-    TWILIO_AVAILABLE = True
-except ImportError:
-    TWILIO_AVAILABLE = False
-    print("Warning: Twilio not installed. SMS features will be disabled. Install with: pip install twilio")
-
+# Load environment variables
 load_dotenv()
 
-app = Flask(__name__)
-app.config['JSON_SORT_KEYS'] = False
-app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
+# Import the factory function and create app instance
+from app import create_app
+from models import db, User, Location, SalesRecord, Forecast, AlertPreference, AlertHistory, IngredientMaster
 
-# Database configuration
-database_url = os.getenv('DATABASE_URL', 'sqlite:///restaurant_ai.db')
-# Only modify SQLite URIs, leave PostgreSQL URIs as-is
-if database_url.startswith('sqlite'):
-    database_url = database_url.replace('sqlite:///', f'sqlite:///{os.path.dirname(os.path.abspath(__file__))}/')
-app.config['SQLALCHEMY_DATABASE_URI'] = database_url
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Create production-safe app instance (uses environment to determine config)
+_config = os.getenv('FLASK_ENV', 'development')
+app = create_app(_config)
 
-# Initialize database
-db.init_app(app)
+# Data path for CSV files
+DATA_PATH = os.path.join(os.path.dirname(__file__), 'data', 'sales_data.csv')
 
-# Email configuration
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', True)
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', 'noreply@restaurantai.com')
-
-# Initialize alert manager
-alert_manager = init_alerts(app)
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_PATH = os.path.join(BASE_DIR, "data", "sales_data.csv")
-
-# Unit conversion standards by country
-UNIT_STANDARDS = {
-    'US': {'weight': 'lbs', 'volume': 'fl oz', 'currency': 'USD'},
-    'GB': {'weight': 'lbs', 'volume': 'fl oz', 'currency': 'GBP'},
-    'CA': {'weight': 'kg', 'volume': 'ml', 'currency': 'CAD'},
-    'AU': {'weight': 'kg', 'volume': 'ml', 'currency': 'AUD'},
-    'IN': {'weight': 'kg', 'volume': 'ml', 'currency': 'INR'},
-    'DE': {'weight': 'kg', 'volume': 'ml', 'currency': 'EUR'},
-    'FR': {'weight': 'kg', 'volume': 'ml', 'currency': 'EUR'},
-    'JP': {'weight': 'kg', 'volume': 'ml', 'currency': 'JPY'},
-    'CN': {'weight': 'kg', 'volume': 'ml', 'currency': 'CNY'},
-    'MX': {'weight': 'kg', 'volume': 'ml', 'currency': 'MXN'},
-    'BR': {'weight': 'kg', 'volume': 'ml', 'currency': 'BRL'},
-}
-
-# Conversion factors to metric
-CONVERSION_FACTORS = {
-    'lbs_to_kg': 0.453592,
-    'kg_to_lbs': 2.20462,
-    'fl_oz_to_ml': 29.5735,
-    'ml_to_fl_oz': 0.033814,
-}
-
-# Simple Browser fallback session map (keyed by client IP + user agent)
+# Global variables for session management
 simple_browser_sessions = {}
-ALLOWED_USER_ROLES = {'admin', 'manager', 'staff'}
-
-# OTP storage for phone authentication (in-memory)
-# Format: {phone_number: {'otp': code, 'expires': timestamp, 'role': role}}
 otp_storage = {}
-import random
-import string
 
-def generate_otp():
-    """Generate a 6-digit OTP code"""
-    return ''.join(random.choices(string.digits, k=6))
+# Constants
+ALLOWED_USER_ROLES = ['manager', 'admin', 'chef']
+UNIT_STANDARDS = {
+    'US': {'weight': 'oz', 'volume': 'cup', 'temperature': 'F'},
+    'CA': {'weight': 'g', 'volume': 'ml', 'temperature': 'C'},
+    'GB': {'weight': 'g', 'volume': 'ml', 'temperature': 'C'},
+}
 
-def store_otp(phone_number, otp, role):
-    """Store OTP with 5-minute expiration"""
-    otp_storage[phone_number] = {
-        'otp': otp,
-        'expires': datetime.now() + timedelta(minutes=5),
-        'role': role
-    }
+# Re-export models for backwards compatibility
+__all__ = [
+    'app',
+    'db',
+    'User',
+    'Location', 
+    'SalesRecord',
+    'Forecast',
+    'AlertPreference',
+    'AlertHistory',
+    'IngredientMaster'
+]
 
 def verify_otp(phone_number, otp):
     """Verify OTP and check if not expired"""
@@ -545,7 +507,7 @@ def guest_login():
             restaurant_name='Demo Restaurant',
             role='staff'
         )
-        demo_user.set_password('demo123')
+        demo_user.set_password('Demo123!@')
         db.session.add(demo_user)
         db.session.flush()
         
@@ -1729,35 +1691,44 @@ def delete_account():
 
 
 def generate_recovery_token(email):
-    """Generate a 6-digit recovery token"""
-    import random
-    return str(random.randint(100000, 999999))
+    """Generate a secure password reset token"""
+    import secrets
+    return secrets.token_urlsafe(32)
 
 
 def store_recovery_token(email, token):
-    """Store recovery token temporarily (in session or cache)"""
-    if 'recovery_tokens' not in app.config:
-        app.config['recovery_tokens'] = {}
-    app.config['recovery_tokens'][email] = {
-        'token': token,
-        'timestamp': datetime.utcnow(),
-        'expires_in': 3600  # 1 hour
-    }
+    """Store recovery token in database with 24-hour expiry"""
+    from datetime import datetime, timedelta
+    
+    user = User.query.filter_by(email=email).first()
+    if user:
+        user.reset_token = token
+        user.reset_token_expiry = datetime.utcnow() + timedelta(hours=24)
+        db.session.commit()
 
 
 def verify_recovery_token(email, token):
-    """Verify recovery token"""
-    if 'recovery_tokens' not in app.config:
+    """Verify password reset token"""
+    from datetime import datetime
+    
+    user = User.query.filter_by(email=email).first()
+    if not user:
         return False
     
-    stored = app.config['recovery_tokens'].get(email)
-    if not stored:
+    if not user.reset_token or user.reset_token != token:
         return False
     
-    if datetime.utcnow() - stored['timestamp'] > timedelta(seconds=stored['expires_in']):
+    if not user.reset_token_expiry or datetime.utcnow() > user.reset_token_expiry:
         return False
     
-    return stored['token'] == token
+    return True
+
+
+def clear_recovery_token(user):
+    """Clear password reset token after use"""
+    user.reset_token = None
+    user.reset_token_expiry = None
+    db.session.commit()
 
 
 @app.route("/password-recovery")
@@ -1766,10 +1737,10 @@ def password_recovery():
     return render_template("password_recovery.html")
 
 
-@app.route("/api/auth/request-recovery-code", methods=["POST"])
+@app.route("/api/auth/request-password-reset", methods=["POST"])
 # @limiter.limit("3 per hour")
-def request_recovery_code():
-    """Request password recovery code"""
+def request_password_reset():
+    """Request password reset link via email"""
     try:
         data = request.get_json()
         email = data.get('email', '').lower().strip()
@@ -1777,109 +1748,148 @@ def request_recovery_code():
         if not email:
             return jsonify({"success": False, "error": "Email is required"}), 400
 
-        # Check if user exists
+        # Check if user exists (don't reveal if email exists for security)
         user = User.query.filter_by(email=email).first()
         if not user:
-            # Don't reveal if email exists for security
-            return jsonify({"success": True, "message": "If email exists, recovery code will be sent"}), 200
+            return jsonify({
+                "success": True,
+                "message": "If an account exists with this email, a password reset link will be sent"
+            }), 200
 
-        # Generate and store recovery token
+        # Generate secure reset token
         token = generate_recovery_token(email)
         store_recovery_token(email, token)
 
-        # Send email with recovery code
+        # Build reset URL (uses environment variable for domain)
+        domain = os.getenv('APP_DOMAIN', 'http://localhost:5000')
+        reset_url = f"{domain}/reset-password?token={token}"
+
+        # Send email with reset link
         try:
             from flask_mail import Message, Mail
             mail = Mail(app)
             msg = Message(
-                subject="Password Recovery Code",
+                subject="Password Reset Request - Restaurant Inventory AI",
                 recipients=[email],
-                body=f"""
-Hello {user.get_full_name()},
-
-Your password recovery code is: {token}
-
-This code will expire in 1 hour.
-
-If you didn't request this, please ignore this email.
-
-Best regards,
-Restaurant Inventory AI Team
+                html=f"""
+<html>
+  <body>
+    <h2>Password Reset Request</h2>
+    <p>Hello {user.get_full_name() or 'User'},</p>
+    <p>You requested to reset your password. Click the link below to set a new password:</p>
+    <p>
+      <a href="{reset_url}" style="background-color: #2196F3; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block;">
+        Reset Your Password
+      </a>
+    </p>
+    <p>Or copy and paste this link in your browser:</p>
+    <p><code>{reset_url}</code></p>
+    <p><strong>This link will expire in 24 hours.</strong></p>
+    <p>If you didn't request this password reset, please ignore this email and your password will remain unchanged.</p>
+    <p>Best regards,<br>Restaurant Inventory AI Team</p>
+  </body>
+</html>
                 """
             )
             mail.send(msg)
+            
+            # Log security event
+            from app.security import log_security_event
+            log_security_event('PASSWORD_RESET_REQUESTED', user.id, request.remote_addr)
+            
         except Exception as e:
             app.logger.error(f"Email error: {e}")
-            # Return success even if email fails (user will see they need to check)
+            # Log the error but still return success for security
+            return jsonify({
+                "success": True,
+                "message": "If an account exists with this email, a password reset link will be sent"
+            }), 200
 
         return jsonify({
             "success": True,
-            "message": "Recovery code sent to your email"
-        })
+            "message": "Password reset link sent to your email"
+        }), 200
 
     except Exception as e:
-        app.logger.error(f"Recovery code error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        app.logger.error(f"Password reset request error: {e}")
+        return jsonify({"success": False, "error": "An error occurred"}), 500
 
 
-@app.route("/api/auth/verify-recovery-code", methods=["POST"])
-# @limiter.limit("10 per hour")
-def verify_recovery_code():
-    """Verify password recovery code"""
+@app.route("/reset-password", methods=["GET"])
+def reset_password_page():
+    """Display password reset form when user clicks email link"""
     try:
-        data = request.get_json()
-        email = data.get('email', '').lower().strip()
-        code = data.get('code', '').strip()
-
-        if not email or not code:
-            return jsonify({"success": False, "error": "Email and code are required"}), 400
-
-        if verify_recovery_token(email, code):
-            return jsonify({"success": True, "message": "Code verified successfully"})
-        else:
-            return jsonify({"success": False, "error": "Invalid or expired code"}), 401
-
+        token = request.args.get('token', '').strip()
+        
+        if not token:
+            flash("Invalid or missing reset token", "error")
+            return redirect('/password-recovery')
+        
+        # Verify token exists and hasn't expired
+        user = User.query.filter_by(reset_token=token).first()
+        if not user:
+            flash("Invalid or expired reset link", "error")
+            return redirect('/password-recovery')
+        
+        from datetime import datetime
+        if not user.reset_token_expiry or datetime.utcnow() > user.reset_token_expiry:
+            flash("Reset link has expired. Please request a new one.", "error")
+            return redirect('/password-recovery')
+        
+        # Render password reset form with embedded token
+        return render_template("reset_password.html", token=token)
+    
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        app.logger.error(f"Reset password page error: {e}")
+        flash("An error occurred", "error")
+        return redirect('/password-recovery')
 
 
-@app.route("/api/auth/reset-password", methods=["POST"])
+@app.route("/api/auth/reset-password-with-token", methods=["POST"])
 # @limiter.limit("5 per hour")
-def reset_password():
-    """Reset password with verified code"""
+def reset_password_with_token():
+    """Reset password using valid token"""
     try:
         data = request.get_json()
-        email = data.get('email', '').lower().strip()
-        new_password = data.get('new_password')
+        token = data.get('token', '').strip()
+        new_password = data.get('new_password', '')
 
-        if not email or not new_password:
-            return jsonify({"success": False, "error": "Email and password are required"}), 400
+        if not token or not new_password:
+            return jsonify({"success": False, "error": "Token and password are required"}), 400
+
+        # Find user by reset token
+        user = User.query.filter_by(reset_token=token).first()
+        if not user:
+            return jsonify({"success": False, "error": "Invalid reset token"}), 401
+
+        from datetime import datetime
+        if not user.reset_token_expiry or datetime.utcnow() > user.reset_token_expiry:
+            return jsonify({"success": False, "error": "Reset token has expired"}), 401
 
         # Validate password
-        password_regex = r'^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$'
-        if not __import__('re').match(password_regex, new_password):
+        try:
+            user.set_password(new_password)
+            clear_recovery_token(user)
+            user.updated_at = datetime.utcnow()
+            db.session.commit()
+            
+            # Log security event
+            from app.security import log_security_event
+            log_security_event('PASSWORD_RESET_COMPLETED', user.id, request.remote_addr)
+            
             return jsonify({
-                "success": False,
-                "error": "Password must be at least 8 characters with uppercase, lowercase, number, and special character"
-            }), 400
-
-        user = User.query.filter_by(email=email).first()
-        if not user:
-            return jsonify({"success": False, "error": "User not found"}), 404
-
-        # Update password
-        user.set_password(new_password)
-        user.updated_at = datetime.utcnow()
-        db.session.commit()
-
-        # Clean up recovery token
-        if 'recovery_tokens' in app.config and email in app.config['recovery_tokens']:
-            del app.config['recovery_tokens'][email]
-
-        return jsonify({"success": True, "message": "Password reset successfully"})
+                "success": True,
+                "message": "Password reset successfully. You can now log in."
+            }), 200
+            
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"Password validation error: {e}")
+            return jsonify({"success": False, "error": str(e)}), 400
 
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
+        app.logger.error(f"Password reset error: {e}")
+        return jsonify({"success": False, "error": "An error occurred"}), 500
 
 
 if __name__ == "__main__":

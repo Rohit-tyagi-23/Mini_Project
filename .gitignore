@@ -27,16 +27,46 @@ instance/
 .DS_Store
 Thumbs.db
 
-# Environment variables
+# ========================================
+# CRITICAL: Environment & Secrets Protection
+# ========================================
+# Never commit environment files with actual credentials
 .env
 .env.local
-.env.production
+.env.*.local
 .env.development
+.env.staging
+.env.test
+
+# Dangerous files - NEVER COMMIT
+.env.production        # Production secrets
+*.key                  # Private keys
+*.pem                  # Certificates/keys
+secrets/               # Secrets directory
+private_keys/          # Private keys directory
+config/secrets/        # Secret configs
+
+# Cookie/Session storage (can contain sensitive data)
+cookie.txt
+cookies.txt
+session*
+sessions/
+
+# API keys and tokens (often accidentally committed)
+*_token
+*_secret
+*_key
+*.token
+api_keys.txt
+credentials.json
+service-account.json
 
 # Database
 *.db
 *.sqlite
+*.sqlite3
 *.sql.backup
+*.sql.bak
 
 # Local cleanup/backup artifacts
 _cleanup_backup/
@@ -48,22 +78,68 @@ logs/
 *.log
 *.log.*
 
-# Docker volumes
+# Docker volumes (contains persistent data)
 postgres_data/
 redis_data/
+mysql_data/
+mongodb_data/
 
 # Kubernetes secrets (never commit actual secrets)
 k8s-secrets.yaml
-
-# Local environment overrides
-.env.local
-.env.*.local
+k8s-secrets*.yaml
+secrets.yaml
 
 # Testing artifacts
 .pytest_cache/
 .coverage
 htmlcov/
 coverage.xml
+.tox/
 
 # Build artifacts
 *.egg-info/
+build/
+dist/
+
+# IDE specific
+.vscode/settings.json
+.idea/workspace.xml
+*.sublime-project
+*.sublime-workspace
+
+# OS specific
+.DS_Store
+Thumbs.db
+.env.swp
+*.swp
+
+# Node modules (if using any frontend build tools)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Temporary files
+*.bak
+*~
+.~*
+
+# SSL certificates (unless intentionally self-signed for dev)
+*.crt
+*.cert
+*.cer
+ssl/
+certs/
+
+# Password managers and browser storage
+.password-store/
+.keys/
+
+# Cloud provider configs (can contain credentials)
+~/.aws/
+~/.gcp/
+~/.azure/
+.env.cloud
+
+# IDE temporary files
+.DS_Store
+.vscode/.gitkeep

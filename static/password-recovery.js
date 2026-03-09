@@ -1,53 +1,108 @@
-// Password recovery functionality
+/**
+ * Simplified Password Recovery Functionality
+ * User enters email and receives secure password reset link via email
+ */
 
-let currentEmail = '';
-let currentStep = 1;
+let lastEmailOrError = '';
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Monitor password strength
-    const newPasswordInput = document.getElementById('new-password');
-    if (newPasswordInput) {
-        newPasswordInput.addEventListener('input', function() {
-            checkPasswordStrength(this.value);
+    // Handle email form submission
+    const emailForm = document.getElementById('email-form');
+    if (emailForm) {
+        emailForm.addEventListener('submit', function(e) {
+            e.preventDefault();
+            requestPasswordReset();
         });
     }
-
-    // Handle email form submission
-    document.getElementById('email-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        requestRecoveryCode();
-    });
-
-    // Handle code form submission
-    document.getElementById('code-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        verifyRecoveryCode();
-    });
-
-    // Handle password form submission
-    document.getElementById('password-form').addEventListener('submit', function(e) {
-        e.preventDefault();
-        resetPassword();
-    });
 });
 
 /**
- * Check password strength and update UI
+ * Request password reset link via email
  */
-function checkPasswordStrength(password) {
-    let strength = 0;
-    let strengthText = 'Weak';
-    let strengthColor = '#F44336'; // Red
+async function requestPasswordReset() {
+    const email = document.getElementById('email').value.trim().toLowerCase();
+    const submitBtn = document.getElementById('submit-btn');
+    const alertContainer = document.getElementById('alert-container');
 
-    if (password.length >= 8) strength++;
-    if (password.length >= 12) strength++;
-    if (/[a-z]/.test(password)) strength++;
-    if (/[A-Z]/.test(password)) strength++;
-    if (/\d/.test(password)) strength++;
-    if (/[@$!%*?&]/.test(password)) strength++;
+    // Validate email
+    if (!email) {
+        showAlert(alertContainer, 'Please enter your email address', 'error');
+        return;
+    }
 
-    if (strength <= 2) {
-        strengthText = 'Weak';
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+        showAlert(alertContainer, 'Please enter a valid email address', 'error');
+        return;
+    }
+
+    try {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Sending...';
+
+        const response = await fetch('/api/auth/request-password-reset', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                email: email
+            })
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            // Show success message  
+            document.getElementById('email-form').style.display = 'none';
+            document.getElementById('success-form').classList.add('show');
+            lastEmailOrError = email;
+        } else {
+            showAlert(alertContainer, data.error || 'Failed to send recovery email', 'error');
+            submitBtn.disabled = false;
+            submitBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Recovery Link';
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        showAlert(alertContainer, 'An error occurred. Please try again.', 'error');
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Send Recovery Link';
+    }
+}
+
+/**
+ * Resend password reset email
+ */
+async function resendEmail() {
+    const alertContainer = document.getElementById('alert-container');
+    const emailForm = document.getElementById('email-form');
+    const successForm = document.getElementById('success-form');
+
+    // Reset form
+    document.getElementById('email').value = lastEmailOrError;
+    emailForm.style.display = 'block';
+    successForm.classList.remove('show');
+    alertContainer.innerHTML = '';
+
+    // Focus on email input
+    document.getElementById('email').focus();
+}
+
+/**
+ * Display alert message
+ */
+function showAlert(container, message, type) {
+    // Clear existing alerts
+    container.innerHTML = '';
+
+    const alert = document.createElement('div');
+    alert.className = `alert alert-${type}`;
+    alert.innerHTML = `<i class="fas fa-${type === 'error' ? 'exclamation-circle' : 'check-circle'}"></i> ${message}`;
+    container.appendChild(alert);
+
+    // Scroll to alert
+    alert.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
         strengthColor = '#F44336';
     } else if (strength <= 4) {
         strengthText = 'Fair';

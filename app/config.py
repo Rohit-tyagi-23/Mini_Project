@@ -10,7 +10,13 @@ class Config:
     """Base configuration with common settings."""
     
     # Core Flask settings
-    SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+    # IMPORTANT: In production, SECRET_KEY MUST be set via environment variable
+    SECRET_KEY = os.getenv('SECRET_KEY')
+    if not SECRET_KEY and os.getenv('FLASK_ENV') == 'production':
+        raise ValueError("CRITICAL: SECRET_KEY environment variable must be set in production!")
+    if not SECRET_KEY:
+        SECRET_KEY = 'dev-key-change-in-production'
+    
     JSON_SORT_KEYS = False
     
     # Database settings
