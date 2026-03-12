@@ -257,6 +257,24 @@ const COUNTRY_NAME_MAP = COUNTRY_LIST.reduce((acc, country) => {
   return acc;
 }, {});
 
+const COUNTRY_DIAL_CODES = {
+  US: '+1', CA: '+1', GB: '+44', IN: '+91', AU: '+61', DE: '+49', FR: '+33',
+  JP: '+81', CN: '+86', MX: '+52', BR: '+55', AE: '+971', SA: '+966', SG: '+65',
+  ZA: '+27', NG: '+234', KE: '+254', EG: '+20', PK: '+92', BD: '+880', LK: '+94',
+  NP: '+977', ID: '+62', MY: '+60', TH: '+66', VN: '+84', PH: '+63', KR: '+82',
+  TW: '+886', HK: '+852', TR: '+90', RU: '+7', UA: '+380', PL: '+48', IT: '+39',
+  ES: '+34', NL: '+31', BE: '+32', CH: '+41', AT: '+43', SE: '+46', NO: '+47',
+  DK: '+45', FI: '+358', IE: '+353', PT: '+351', GR: '+30', CZ: '+420', HU: '+36',
+  RO: '+40', BG: '+359', HR: '+385', RS: '+381', SK: '+421', SI: '+386', IL: '+972',
+  IQ: '+964', IR: '+98', QA: '+974', KW: '+965', OM: '+968', BH: '+973',
+  NZ: '+64', AR: '+54', CL: '+56', CO: '+57', PE: '+51', VE: '+58', UY: '+598',
+  PY: '+595', BO: '+591', EC: '+593', CR: '+506', PA: '+507', GT: '+502',
+  SV: '+503', HN: '+504', NI: '+505', DO: '+1', PR: '+1', JM: '+1',
+  MA: '+212', DZ: '+213', TN: '+216', ET: '+251', GH: '+233', TZ: '+255',
+  UG: '+256', SD: '+249', CM: '+237', CI: '+225', SN: '+221', ZM: '+260',
+  ZW: '+263'
+};
+
 const DEFAULT_UNITS = { weight: 'kg', volume: 'ml', currency: 'USD' };
 
 const UNIT_STANDARDS = {
@@ -275,6 +293,37 @@ const UNIT_STANDARDS = {
 
 function getUnitsForCountry(countryCode) {
   return UNIT_STANDARDS[countryCode] || DEFAULT_UNITS;
+}
+
+function getDialCodeForCountry(countryCode) {
+  return COUNTRY_DIAL_CODES[countryCode] || '+1';
+}
+
+function updatePhoneCountryCode(countryCode) {
+  if (!countryCode) return;
+
+  const dialCode = getDialCodeForCountry(countryCode);
+  const phoneInputs = ['phone_number', 'phone_login'];
+
+  phoneInputs.forEach((inputId) => {
+    const input = document.getElementById(inputId);
+    if (!input) return;
+
+    const rawValue = (input.value || '').trim();
+    if (!rawValue) {
+      input.value = dialCode;
+    } else if (!rawValue.startsWith('+')) {
+      input.value = `${dialCode}${rawValue.replace(/^0+/, '')}`;
+    }
+
+    input.placeholder = `${dialCode}-555-0123`;
+  });
+
+  const hints = document.querySelectorAll('#phoneNumberGroup .form-hint, #signupForm .form-hint');
+  hints.forEach((hint) => {
+    if (!hint) return;
+    hint.innerHTML = `<i class="fas fa-info-circle"></i> Country code auto-set to ${dialCode}`;
+  });
 }
 
 class LocationService {
@@ -441,28 +490,8 @@ class LocationService {
 
   // Request location permission and detect country
   async requestLocation() {
-    try {
-      const position = await this.getCurrentLocation();
-      const locationData = await this.getCountryFromCoordinates(
-        position.latitude,
-        position.longitude
-      );
-      return locationData;
-    } catch (error) {
-      console.error('Location request failed:', error);
-      // Use default if location fails
-      this.country = 'US';
-      this.units = { weight: 'lbs', volume: 'fl oz', currency: 'USD' };
-      this.location = { country: 'US' };
-      this.saveToStorage();
-      return {
-        success: true,
-        country: 'US',
-        units: this.units,
-        location: this.location,
-        default: true
-      };
-    }
+    const position = await this.getCurrentLocation();
+    return this.getCountryFromCoordinates(position.latitude, position.longitude);
   }
 
   // Convert units
@@ -643,34 +672,47 @@ function showLocationModal() {
   document.body.appendChild(modal);
   initCountrySearch();
 
-  // Auto-detect button
-  document.getElementById('autoDetectBtn').addEventListener('click', async () => {
+  const countrySelect = document.getElementById('countrySelect');
+
+  function setCountryPreview(countryCode) {
+    if (!countryCode) return;
+    countrySelect.value = countryCode;
+    updatePhoneCountryCode(countryCode);
+  }
+
+  async function runAutoDetect(silent = false) {
     const btn = document.getElementById('autoDetectBtn');
-    const originalText = btn.innerHTML;
+    const originalText = '<i class="fas fa-location-arrow"></i> Auto-Detect';
     btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Detecting...';
     btn.disabled = true;
-    
+
     try {
       const result = await locationService.requestLocation();
-      console.log('Auto-detected location:', result);
+      setCountryPreview(result.country || result.location?.country);
       modal.remove();
-      showLocationSuccess(result.location);
-      // Trigger page update
+      showLocationSuccess(result.location || { country: result.country });
       if (typeof updateLocationDisplay === 'function') {
         updateLocationDisplay();
       }
-      // Update navigation links with location
       if (typeof updateNavigationLinks === 'function') {
         updateNavigationLinks();
       }
-      // NO location.reload() - just close the modal and let user continue
     } catch (error) {
       console.error('Location request failed:', error);
       btn.innerHTML = originalText;
       btn.disabled = false;
-      alert('Unable to detect location automatically. Please select your country manually from the dropdown.');
+      if (!silent) {
+        alert('Unable to detect location automatically. Please select your country manually from the dropdown.');
+      }
     }
+  }
+
+  countrySelect.addEventListener('change', () => {
+    setCountryPreview(countrySelect.value);
   });
+
+  // Auto-detect button
+  document.getElementById('autoDetectBtn').addEventListener('click', async () => runAutoDetect(false));
 
   function applyManualSelection(selectedCountry) {
     if (!selectedCountry) {
@@ -682,6 +724,7 @@ function showLocationModal() {
     locationService.units = getUnitsForCountry(selectedCountry);
     locationService.location = { country: selectedCountry };
     locationService.saveToStorage();
+    updatePhoneCountryCode(selectedCountry);
 
     console.log('✅ Manually selected country:', selectedCountry);
     console.log('✅ Units set to:', locationService.units);
@@ -708,12 +751,16 @@ function showLocationModal() {
     applyManualSelection(selectedCountry);
   });
 
-  const countrySelect = document.getElementById('countrySelect');
   countrySelect.addEventListener('dblclick', (event) => {
     if (event.target && event.target.tagName === 'OPTION') {
       applyManualSelection(countrySelect.value);
     }
   });
+
+  // Auto-detect immediately; keep manual selection available if detection fails.
+  setTimeout(() => {
+    runAutoDetect(true);
+  }, 150);
 }
 
 // Show location success message
@@ -753,6 +800,11 @@ document.addEventListener('DOMContentLoaded', () => {
     locationService.getUserLocation().catch(err => {
       console.log('Using stored or default units');
     });
+  } else {
+    const stored = locationService.loadFromStorage();
+    if (stored && stored.country) {
+      updatePhoneCountryCode(stored.country);
+    }
   }
 });
 
@@ -761,30 +813,26 @@ function attachLocationToForm(formId) {
   const form = document.getElementById(formId);
   if (!form) return;
 
-  const latitudeInput = document.createElement('input');
-  latitudeInput.type = 'hidden';
-  latitudeInput.name = 'latitude';
-  latitudeInput.id = 'latitude';
+  function getOrCreateHiddenInput(name) {
+    let input = form.querySelector(`input[name="${name}"]`);
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      form.appendChild(input);
+    }
+    return input;
+  }
 
-  const longitudeInput = document.createElement('input');
-  longitudeInput.type = 'hidden';
-  longitudeInput.name = 'longitude';
-  longitudeInput.id = 'longitude';
+  const latitudeInput = getOrCreateHiddenInput('latitude');
+  const longitudeInput = getOrCreateHiddenInput('longitude');
+  const countryInput = getOrCreateHiddenInput('country');
+  const cityInput = getOrCreateHiddenInput('city');
 
-  const countryInput = document.createElement('input');
-  countryInput.type = 'hidden';
-  countryInput.name = 'country';
-  countryInput.id = 'country';
-
-  const cityInput = document.createElement('input');
-  cityInput.type = 'hidden';
-  cityInput.name = 'city';
-  cityInput.id = 'city';
-
-  form.appendChild(latitudeInput);
-  form.appendChild(longitudeInput);
-  form.appendChild(countryInput);
-  form.appendChild(cityInput);
+  const initialCountry = form.querySelector('input[name="country"]')?.value;
+  if (initialCountry) {
+    updatePhoneCountryCode(initialCountry);
+  }
 
   form.addEventListener('submit', async (e) => {
     // Use stored location if available
@@ -794,18 +842,19 @@ function attachLocationToForm(formId) {
       
       // Set coordinates if available
       if (storedLocation.location) {
-        document.getElementById('latitude').value = storedLocation.location.latitude || '';
-        document.getElementById('longitude').value = storedLocation.location.longitude || '';
+        latitudeInput.value = storedLocation.location.latitude || '';
+        longitudeInput.value = storedLocation.location.longitude || '';
         
         // Set city if available
         if (storedLocation.location.city) {
-          document.getElementById('city').value = storedLocation.location.city;
+          cityInput.value = storedLocation.location.city;
         }
       }
       
       // Set country code (most important for units)
       if (storedLocation.country) {
-        document.getElementById('country').value = storedLocation.country;
+        countryInput.value = storedLocation.country;
+        updatePhoneCountryCode(storedLocation.country);
         console.log('✅ Country set to:', storedLocation.country);
       }
       
@@ -826,8 +875,8 @@ function attachLocationToForm(formId) {
       
       try {
         const position = await locationService.getCurrentLocation();
-        document.getElementById('latitude').value = position.latitude;
-        document.getElementById('longitude').value = position.longitude;
+        latitudeInput.value = position.latitude;
+        longitudeInput.value = position.longitude;
         try {
           localStorage.setItem('locationRequested', 'true');
         } catch (error) {

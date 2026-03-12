@@ -2,6 +2,7 @@
 
 let trendChart = null;
 let topIngredientsChart = null;
+let onboardingShown = false;
 
 /**
  * Toast notification system
@@ -127,11 +128,17 @@ document.addEventListener('DOMContentLoaded', function() {
     if (addItemForm) {
         addItemForm.addEventListener('submit', handleAddItemSubmit);
     }
+
+    const salesImportForm = document.getElementById('salesImportForm');
+    if (salesImportForm) {
+        salesImportForm.addEventListener('submit', handleSalesImportSubmit);
+    }
     
     // Close modal when clicking outside
     window.onclick = function(event) {
         const addSaleModal = document.getElementById('addSaleModal');
         const addItemModal = document.getElementById('addItemModal');
+        const salesImportModal = document.getElementById('salesImportModal');
 
         if (event.target === addSaleModal) {
             closeAddSaleModal();
@@ -139,6 +146,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
         if (event.target === addItemModal) {
             closeAddItemModal();
+        }
+
+        if (event.target === salesImportModal) {
+            closeSalesImportModal();
         }
     }
 });
@@ -154,6 +165,7 @@ async function loadDashboard() {
             console.log('Dashboard data received:', data.stats);
             updateStats(data.stats);
             renderCharts(data.stats);
+            handleFirstTimeOnboarding(data.stats);
             showLoading(false);
         } else {
             console.error('API returned error:', data.error);
@@ -162,6 +174,56 @@ async function loadDashboard() {
     } catch (error) {
         console.error('JavaScript error in loadDashboard:', error);
         showError('Error loading dashboard: ' + error.message);
+    }
+}
+
+function handleFirstTimeOnboarding(stats) {
+    const dashboardContent = document.getElementById('dashboard-content');
+    if (!dashboardContent) return;
+
+    let panel = document.getElementById('first-time-onboarding');
+
+    if (stats.has_sales) {
+        if (panel) panel.remove();
+        onboardingShown = true;
+        return;
+    }
+
+    if (!panel) {
+        panel = document.createElement('div');
+        panel.id = 'first-time-onboarding';
+        panel.className = 'card';
+        panel.style.marginBottom = '1rem';
+        dashboardContent.insertBefore(panel, dashboardContent.firstChild);
+    }
+
+    const subtitle = stats.has_products
+        ? 'You already have products. Import past sales or add your first sale record to populate analytics.'
+        : 'Start by importing your previous sales file, or add your products first if you are starting fresh.';
+
+    panel.innerHTML = `
+        <div class="card-header">
+            <h2><i class="fas fa-seedling"></i> Welcome! Set Up Your Dashboard</h2>
+        </div>
+        <div class="card-body">
+            <p style="margin-bottom: 1rem;">${subtitle}</p>
+            <div class="action-buttons">
+                <button class="btn btn-primary" onclick="showSalesImportModal()">
+                    <i class="fas fa-file-import"></i> Import Previous Sales (CSV/Excel)
+                </button>
+                <button class="btn btn-secondary" onclick="showAddItemModal()">
+                    <i class="fas fa-box"></i> Add Product
+                </button>
+                <button class="btn btn-secondary" onclick="showAddSaleModal()">
+                    <i class="fas fa-plus"></i> Add First Sale Manually
+                </button>
+            </div>
+        </div>
+    `;
+
+    if (!onboardingShown) {
+        showToast('Welcome! Import your previous sales or add products to start.', 'info', 4000);
+        onboardingShown = true;
     }
 }
 
@@ -439,6 +501,67 @@ function showAddItemModal() {
 function closeAddItemModal() {
     document.getElementById('addItemModal').style.display = 'none';
     document.getElementById('addItemForm').reset();
+}
+
+function showSalesImportModal() {
+    const modal = document.getElementById('salesImportModal');
+    if (!modal) return;
+    modal.style.display = 'flex';
+}
+
+function closeSalesImportModal() {
+    const modal = document.getElementById('salesImportModal');
+    const form = document.getElementById('salesImportForm');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+    if (form) {
+        form.reset();
+    }
+}
+
+async function handleSalesImportSubmit(e) {
+    e.preventDefault();
+
+    const fileInput = document.getElementById('sales-file');
+    const file = fileInput?.files?.[0];
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+
+    if (!file) {
+        showToast('Please select a CSV or Excel file to import', 'warning');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+    setButtonLoading(submitBtn, true);
+
+    try {
+        const response = await fetch('/api/sales/import', {
+            method: 'POST',
+            body: formData
+        });
+
+        const data = await response.json();
+        if (!data.success) {
+            showToast('Import failed: ' + (data.error || 'Unable to import file'), 'error', 4500);
+            return;
+        }
+
+        showToast(
+            `Imported ${data.rows_imported} sales rows. Added ${data.ingredients_added} new products.`,
+            'success',
+            4500
+        );
+        closeSalesImportModal();
+        await loadIngredients();
+        await loadDashboard();
+    } catch (error) {
+        console.error('Sales import error:', error);
+        showToast('Import error: ' + error.message, 'error');
+    } finally {
+        setButtonLoading(submitBtn, false);
+    }
 }
 
 // Handle add sale form submission

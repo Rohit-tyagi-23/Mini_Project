@@ -137,6 +137,9 @@
             <button class="btn btn-primary" onclick="window.location.href='/forecast'">
               <i class="fas fa-chart-line"></i> Generate Forecast
             </button>
+            <button class="btn btn-secondary" onclick="showSalesImportModal()">
+              <i class="fas fa-file-import"></i> Import Sales File
+            </button>
             <button class="btn btn-secondary" onclick="showAddSaleModal()">
               <i class="fas fa-plus"></i> Add Sale Record
             </button>
@@ -148,6 +151,30 @@
             </button>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sales Import Modal -->
+  <div id="salesImportModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2><i class="fas fa-file-import"></i> Import Previous Sales</h2>
+        <span class="close" onclick="closeSalesImportModal()">&times;</span>
+      </div>
+      <div class="modal-body">
+        <form id="salesImportForm">
+          <div class="form-group">
+            <label for="sales-file">Upload CSV or Excel file</label>
+            <input type="file" id="sales-file" accept=".csv,.xlsx,.xls" required />
+            <small>Supported formats: CSV, XLSX, XLS. We auto-detect date, product, and quantity columns.</small>
+          </div>
+
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" onclick="closeSalesImportModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Import Sales</button>
+          </div>
+        </form>
       </div>
     </div>
   </div>

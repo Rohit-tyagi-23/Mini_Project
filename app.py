@@ -13,11 +13,12 @@ For all new code, use:
 """
 
 import os
+import re
 from dotenv import load_dotenv
 from functools import wraps
 from flask import session, request, redirect, url_for, render_template, jsonify, flash
 from datetime import datetime, timedelta
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 import pandas as pd
 from model import forecast_demand
 
@@ -41,11 +42,55 @@ otp_storage = {}
 
 # Constants
 ALLOWED_USER_ROLES = ['manager', 'admin', 'chef']
-UNIT_STANDARDS = {
-    'US': {'weight': 'oz', 'volume': 'cup', 'temperature': 'F'},
-    'CA': {'weight': 'g', 'volume': 'ml', 'temperature': 'C'},
-    'GB': {'weight': 'g', 'volume': 'ml', 'temperature': 'C'},
-}
+
+
+class CountryUnitMap(dict):
+    """Dictionary-like unit map with sensible defaults for all countries."""
+
+    IMPERIAL_UNIT_COUNTRIES = {'US', 'LR', 'MM'}
+    CURRENCY_BY_COUNTRY = {
+        'AE': 'AED', 'AR': 'ARS', 'AT': 'EUR', 'AU': 'AUD', 'BD': 'BDT', 'BE': 'EUR',
+        'BG': 'BGN', 'BH': 'BHD', 'BR': 'BRL', 'CA': 'CAD', 'CH': 'CHF', 'CL': 'CLP',
+        'CN': 'CNY', 'CO': 'COP', 'CZ': 'CZK', 'DE': 'EUR', 'DK': 'DKK', 'EG': 'EGP',
+        'ES': 'EUR', 'FI': 'EUR', 'FR': 'EUR', 'GB': 'GBP', 'GR': 'EUR', 'HK': 'HKD',
+        'HR': 'EUR', 'HU': 'HUF', 'ID': 'IDR', 'IE': 'EUR', 'IL': 'ILS', 'IN': 'INR',
+        'IS': 'ISK', 'IT': 'EUR', 'JP': 'JPY', 'KE': 'KES', 'KR': 'KRW', 'KW': 'KWD',
+        'LK': 'LKR', 'MA': 'MAD', 'MX': 'MXN', 'MY': 'MYR', 'NG': 'NGN', 'NL': 'EUR',
+        'NO': 'NOK', 'NZ': 'NZD', 'OM': 'OMR', 'PE': 'PEN', 'PH': 'PHP', 'PK': 'PKR',
+        'PL': 'PLN', 'PT': 'EUR', 'QA': 'QAR', 'RO': 'RON', 'RS': 'RSD', 'RU': 'RUB',
+        'SA': 'SAR', 'SE': 'SEK', 'SG': 'SGD', 'TH': 'THB', 'TR': 'TRY', 'TW': 'TWD',
+        'UA': 'UAH', 'US': 'USD', 'VN': 'VND', 'ZA': 'ZAR'
+    }
+
+    def units_for_country(self, country_code):
+        code = (country_code or 'US').upper()
+        if code in self:
+            return dict(super().get(code))
+
+        weight = 'lbs' if code in self.IMPERIAL_UNIT_COUNTRIES else 'kg'
+        volume = 'fl oz' if code in self.IMPERIAL_UNIT_COUNTRIES else 'ml'
+        currency = self.CURRENCY_BY_COUNTRY.get(code, 'USD')
+        return {'weight': weight, 'volume': volume, 'currency': currency}
+
+    def get(self, key, default=None):
+        if key is None:
+            return dict(super().get('US', default or {}))
+        return self.units_for_country(str(key))
+
+
+UNIT_STANDARDS = CountryUnitMap({
+    'US': {'weight': 'lbs', 'volume': 'fl oz', 'currency': 'USD'},
+    'CA': {'weight': 'kg', 'volume': 'ml', 'currency': 'CAD'},
+    'GB': {'weight': 'kg', 'volume': 'ml', 'currency': 'GBP'},
+    'AU': {'weight': 'kg', 'volume': 'ml', 'currency': 'AUD'},
+    'IN': {'weight': 'kg', 'volume': 'ml', 'currency': 'INR'},
+    'DE': {'weight': 'kg', 'volume': 'ml', 'currency': 'EUR'},
+    'FR': {'weight': 'kg', 'volume': 'ml', 'currency': 'EUR'},
+    'JP': {'weight': 'kg', 'volume': 'ml', 'currency': 'JPY'},
+    'CN': {'weight': 'kg', 'volume': 'ml', 'currency': 'CNY'},
+    'MX': {'weight': 'kg', 'volume': 'ml', 'currency': 'MXN'},
+    'BR': {'weight': 'kg', 'volume': 'ml', 'currency': 'BRL'},
+})
 
 # Re-export models for backwards compatibility
 __all__ = [
@@ -897,20 +942,23 @@ def result():
 def get_ingredients():
     """API endpoint to get all ingredients"""
     try:
-        df = pd.read_csv(DATA_PATH)
-        csv_ingredients = set(df["ingredient"].dropna().astype(str).str.strip().tolist())
-
         user = get_current_user()
-        db_ingredients = set()
-        if user:
-            db_items = IngredientMaster.query.filter_by(user_id=user.id).all()
-            db_ingredients = {
-                (item.ingredient or '').strip()
-                for item in db_items
-                if item.ingredient and item.ingredient.strip()
-            }
+        if not user:
+            return jsonify({"success": False, "error": "User not authenticated"}), 401
 
-        ingredients = sorted(csv_ingredients.union(db_ingredients))
+        inventory_ingredients = {
+            (item.ingredient or '').strip()
+            for item in IngredientMaster.query.filter_by(user_id=user.id).all()
+            if item.ingredient and item.ingredient.strip()
+        }
+
+        sales_ingredients = {
+            (record.ingredient or '').strip()
+            for record in SalesRecord.query.filter_by(user_id=user.id).all()
+            if record.ingredient and record.ingredient.strip()
+        }
+
+        ingredients = sorted(inventory_ingredients.union(sales_ingredients))
         return jsonify({"success": True, "ingredients": ingredients})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
@@ -949,10 +997,46 @@ def add_inventory_item():
 def dashboard_stats():
     """API endpoint for dashboard statistics"""
     try:
-        df = pd.read_csv(DATA_PATH)
-        df["date"] = pd.to_datetime(df["date"])
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "User not authenticated"}), 401
+
+        sales_rows = SalesRecord.query.filter_by(user_id=user.id).all()
+        has_products = IngredientMaster.query.filter_by(user_id=user.id).count() > 0
 
         today = datetime.now().date()
+        date_index = pd.date_range(today - timedelta(days=6), today, freq="D")
+
+        if not sales_rows:
+            stats = {
+                "total_ingredients": 0,
+                "total_sales": 0.0,
+                "avg_daily_sales": 0.0,
+                "date_range": {
+                    "start": (today - timedelta(days=6)).strftime("%Y-%m-%d"),
+                    "end": today.strftime("%Y-%m-%d")
+                },
+                "top_ingredients": [],
+                "recent_trend": {
+                    "labels": [d.strftime("%Y-%m-%d") for d in date_index],
+                    "values": [0.0 for _ in date_index]
+                },
+                "has_sales": False,
+                "has_products": has_products,
+                "total_records": 0
+            }
+            return jsonify({"success": True, "stats": stats})
+
+        df = pd.DataFrame([
+            {
+                "date": row.sale_date,
+                "ingredient": row.ingredient,
+                "quantity_sold": row.quantity_sold,
+            }
+            for row in sales_rows
+        ])
+        df["date"] = pd.to_datetime(df["date"])
+
         stats = {
             "total_ingredients": int(df["ingredient"].nunique()),
             "total_sales": float(df["quantity_sold"].sum()),
@@ -974,12 +1058,14 @@ def dashboard_stats():
         recent_start = today - timedelta(days=6)
         recent_df = df[df["date"].dt.date >= recent_start]
         daily_totals = recent_df.groupby("date")["quantity_sold"].sum().sort_index()
-        date_index = pd.date_range(recent_start, today, freq="D")
         daily_totals = daily_totals.reindex(date_index, fill_value=0)
         stats["recent_trend"] = {
             "labels": [d.strftime("%Y-%m-%d") for d in date_index],
             "values": [float(v) for v in daily_totals.values]
         }
+        stats["has_sales"] = True
+        stats["has_products"] = has_products
+        stats["total_records"] = int(len(df))
         
         return jsonify({"success": True, "stats": stats})
     except Exception as e:
@@ -1218,6 +1304,141 @@ def api_upload_csv():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/sales/import", methods=["POST"])
+@login_required
+def import_user_sales_file():
+    """Import user historical sales from CSV/Excel with flexible column names."""
+    try:
+        user = get_current_user()
+        if not user:
+            return jsonify({"success": False, "error": "User not authenticated"}), 401
+
+        if "file" not in request.files:
+            return jsonify({"success": False, "error": "No file provided"}), 400
+
+        file = request.files["file"]
+        if not file or not file.filename:
+            return jsonify({"success": False, "error": "No file selected"}), 400
+
+        filename = file.filename.lower()
+        if filename.endswith(".csv"):
+            source_df = pd.read_csv(file)
+        elif filename.endswith(".xlsx") or filename.endswith(".xls"):
+            try:
+                source_df = pd.read_excel(file)
+            except Exception:
+                return jsonify({
+                    "success": False,
+                    "error": "Excel file support requires engine dependencies (e.g., openpyxl). You can upload CSV now or install openpyxl."
+                }), 400
+        else:
+            return jsonify({"success": False, "error": "Unsupported file type. Use CSV, XLSX, or XLS."}), 400
+
+        if source_df.empty:
+            return jsonify({"success": False, "error": "Uploaded file is empty"}), 400
+
+        def normalize_col(col_name):
+            return re.sub(r"[^a-z0-9]", "", str(col_name).strip().lower())
+
+        normalized_to_original = {normalize_col(c): c for c in source_df.columns}
+
+        def resolve_column(candidates):
+            for candidate in candidates:
+                key = normalize_col(candidate)
+                if key in normalized_to_original:
+                    return normalized_to_original[key]
+
+            for key, original in normalized_to_original.items():
+                for candidate in candidates:
+                    candidate_key = normalize_col(candidate)
+                    if candidate_key and (candidate_key in key or key in candidate_key):
+                        return original
+            return None
+
+        date_col = resolve_column(["date", "sale_date", "sold_date", "transaction_date", "day"])
+        ingredient_col = resolve_column(["ingredient", "item", "item_name", "product", "product_name", "name", "sku"])
+        quantity_col = resolve_column(["quantity_sold", "quantity", "qty", "units", "units_sold", "sold", "amount"])
+
+        missing = []
+        if not date_col:
+            missing.append("date")
+        if not ingredient_col:
+            missing.append("ingredient/item")
+        if not quantity_col:
+            missing.append("quantity")
+
+        if missing:
+            return jsonify({
+                "success": False,
+                "error": f"Could not detect required columns: {', '.join(missing)}",
+                "available_columns": [str(c) for c in source_df.columns]
+            }), 400
+
+        working_df = pd.DataFrame({
+            "date": pd.to_datetime(source_df[date_col], errors="coerce"),
+            "ingredient": source_df[ingredient_col].astype(str).str.strip(),
+            "quantity_sold": pd.to_numeric(source_df[quantity_col], errors="coerce")
+        })
+
+        working_df = working_df.dropna(subset=["date", "ingredient", "quantity_sold"])
+        working_df = working_df[working_df["ingredient"] != ""]
+
+        if working_df.empty:
+            return jsonify({
+                "success": False,
+                "error": "No valid rows found after parsing. Ensure your file has valid dates, item names, and numeric quantities."
+            }), 400
+
+        unique_ingredients = sorted(set(working_df["ingredient"].tolist()))
+        existing_items = {
+            (item.ingredient or "").strip()
+            for item in IngredientMaster.query.filter_by(user_id=user.id).all()
+            if item.ingredient
+        }
+
+        added_ingredients = 0
+        for ingredient in unique_ingredients:
+            if ingredient not in existing_items:
+                db.session.add(IngredientMaster(user_id=user.id, ingredient=ingredient))
+                added_ingredients += 1
+
+        imported_count = 0
+        for row in working_df.itertuples(index=False):
+            db.session.add(SalesRecord(
+                user_id=user.id,
+                ingredient=str(row.ingredient),
+                quantity_sold=float(row.quantity_sold),
+                sale_date=row.date.date()
+            ))
+            imported_count += 1
+
+        # Keep legacy CSV data source in sync for existing forecast/reporting flows.
+        csv_rows = working_df.copy()
+        csv_rows["date"] = csv_rows["date"].dt.strftime("%Y-%m-%d")
+        csv_rows = csv_rows[["date", "ingredient", "quantity_sold"]]
+
+        try:
+            existing_df = pd.read_csv(DATA_PATH)
+            combined_df = pd.concat([existing_df, csv_rows], ignore_index=True)
+            combined_df.to_csv(DATA_PATH, index=False)
+        except FileNotFoundError:
+            csv_rows.to_csv(DATA_PATH, index=False)
+
+        db.session.commit()
+
+        total_user_sales = SalesRecord.query.filter_by(user_id=user.id).count()
+        return jsonify({
+            "success": True,
+            "message": "Sales imported successfully",
+            "rows_imported": imported_count,
+            "ingredients_added": added_ingredients,
+            "total_user_sales": total_user_sales
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @login_required
 @app.route("/api/ingredient-history/<ingredient>", methods=["GET"])
 def ingredient_history(ingredient):
@@ -1252,8 +1473,11 @@ def get_country_from_coordinates():
         latitude = data.get("latitude")
         longitude = data.get("longitude")
         
-        if not latitude or not longitude:
+        if latitude is None or longitude is None:
             return jsonify({"success": False, "error": "Latitude and longitude required"}), 400
+
+        latitude = float(latitude)
+        longitude = float(longitude)
         
         # Simple country detection based on coordinates
         # In production, use a proper reverse geocoding service like Google Maps or Nominatim
@@ -1288,9 +1512,7 @@ def get_country_from_coordinates():
                 user.location.country = detected_country
                 user.location.latitude = latitude
                 user.location.longitude = longitude
-                user.location.weight_unit = UNIT_STANDARDS.get(detected_country, UNIT_STANDARDS['US']).get('weight', 'kg')
-                user.location.volume_unit = UNIT_STANDARDS.get(detected_country, UNIT_STANDARDS['US']).get('volume', 'ml')
-                user.location.currency = UNIT_STANDARDS.get(detected_country, UNIT_STANDARDS['US']).get('currency', 'USD')
+                user.location.set_units(UNIT_STANDARDS.get(detected_country, UNIT_STANDARDS['US']))
                 db.session.commit()
                 session['location'] = user.location.to_dict()
                 session['units'] = user.location.get_units()

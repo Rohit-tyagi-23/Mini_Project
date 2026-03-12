@@ -45,7 +45,7 @@ class User(db.Model):
         Validate password meets security requirements.
         
         Requirements:
-        - Minimum 6 characters
+        - Minimum 12 characters
         - Must contain uppercase letter
         - Must contain lowercase letter
         - Must contain number
@@ -57,8 +57,8 @@ class User(db.Model):
         if not password:
             raise PasswordValidationError("Password is required")
         
-        if len(password) < 6:
-            raise PasswordValidationError("Password must be at least 6 characters long")
+        if len(password) < 12:
+            raise PasswordValidationError("Password must be at least 12 characters long")
         
         if not any(c.isupper() for c in password):
             raise PasswordValidationError("Password must contain at least one uppercase letter")

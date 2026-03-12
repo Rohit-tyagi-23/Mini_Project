@@ -109,8 +109,8 @@ document.querySelectorAll('.btn-social').forEach(btn => {
     });
 });
 
-// Attach location data to form hidden inputs
-function attachLocationToForm(formId) {
+// Attach location data to form hidden inputs (legacy fallback)
+function attachStoredLocationToForm(formId) {
     const form = document.getElementById(formId);
     if (!form) return;
     
@@ -170,6 +170,11 @@ function attachLocationToForm(formId) {
     } catch (error) {
         console.error('Error attaching location to form:', error);
     }
+}
+
+// Do not override location.js implementation if it is already available.
+if (typeof window.attachLocationToForm !== 'function') {
+    window.attachLocationToForm = attachStoredLocationToForm;
 }
 
 // Initialize remember me on DOM ready
