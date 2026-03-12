@@ -13,10 +13,17 @@ import tempfile
 # Add current directory to path to ensure imports work
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import from app.py (not app/ directory)
-import app as app_module
+# Import from app.py file directly (not app/ package directory) to avoid name collision
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location(
+    "app_root",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.py")
+)
+app_module = _ilu.module_from_spec(_spec)
+_spec.loader.exec_module(app_module)
+
 app = app_module.app
-db = app_module.db  
+db = app_module.db
 User = app_module.User
 Location = app_module.Location
 SalesRecord = app_module.SalesRecord
