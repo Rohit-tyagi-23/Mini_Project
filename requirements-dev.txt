@@ -1,0 +1,2 @@
+# Compatibility requirements file for tooling expecting requirements-dev.txt at repo root.
+-r config/requirements-dev.txt

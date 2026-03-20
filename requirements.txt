@@ -1,0 +1,2 @@
+# Compatibility requirements file for platforms expecting requirements.txt at repo root.
+-r config/requirements.txt
