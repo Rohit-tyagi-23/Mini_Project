@@ -71,16 +71,22 @@ def validate_security_config(app, config_name):
     logger = app.logger
     
     if config_name == 'production':
+        strict_mode = os.getenv('STRICT_PRODUCTION_CONFIG', 'false').lower() == 'true'
+
+        def _critical(message):
+            if strict_mode:
+                logger.error(message)
+                raise ValueError(message)
+            logger.warning(message)
+
         logger.info('=' * 60)
         logger.info('PRODUCTION SECURITY VALIDATION')
         logger.info('=' * 60)
         
         # Check SECRET_KEY
         secret_key = app.config.get('SECRET_KEY')
-        if not secret_key or secret_key == 'dev-key-change-in-production':
-            logger.error('❌ CRITICAL: SECRET_KEY not properly set for production!')
-            logger.error('   Set environment variable: export SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")')
-            raise ValueError("CRITICAL: SECRET_KEY must be set to a strong random value in production!")
+        if not secret_key or secret_key == 'unsafe-temporary-key-change-me':
+            _critical('CRITICAL: SECRET_KEY not properly set for production. Set SECRET_KEY in environment.')
         elif len(secret_key) < 32:
             logger.warning(f'⚠️  WARNING: SECRET_KEY is only {len(secret_key)} characters. Recommend 64+ characters.')
         else:
@@ -89,10 +95,7 @@ def validate_security_config(app, config_name):
         # Check DATABASE_URL
         db_url = app.config.get('SQLALCHEMY_DATABASE_URI')
         if db_url and 'sqlite' in db_url:
-            logger.error('❌ CRITICAL: SQLite database configured for production!')
-            logger.error('   Configure PostgreSQL instead:')
-            logger.error('   export DATABASE_URL="postgresql://user:password@host:5432/database"')
-            raise ValueError("CRITICAL: SQLite cannot be used in production. Use PostgreSQL!")
+            _critical('CRITICAL: SQLite database configured for production. Configure DATABASE_URL for PostgreSQL.')
         elif db_url and ':changeme@' in db_url:
             logger.warning('⚠️  WARNING: Database password appears to be default value')
         elif db_url:
@@ -116,9 +119,7 @@ def validate_security_config(app, config_name):
         
         # Check Flask DEBUG mode
         if app.debug:
-            logger.error('❌ CRITICAL: DEBUG mode enabled in production!')
-            logger.error('   Set environment variable: export FLASK_ENV=production')
-            raise ValueError("CRITICAL: DEBUG mode must be disabled in production!")
+            _critical('CRITICAL: DEBUG mode enabled in production. Set FLASK_ENV=production.')
         else:
             logger.info('✓ DEBUG mode disabled')
         

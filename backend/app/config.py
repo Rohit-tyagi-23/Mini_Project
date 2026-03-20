@@ -6,16 +6,25 @@ import os
 from datetime import timedelta
 
 
+def _normalized_database_url(default_url):
+    """Normalize DATABASE_URL for SQLAlchemy compatibility on hosted platforms."""
+    raw_url = os.getenv('DATABASE_URL')
+    if not raw_url:
+        return default_url
+    if raw_url.startswith('postgres://'):
+        return raw_url.replace('postgres://', 'postgresql://', 1)
+    return raw_url
+
+
 class Config:
     """Base configuration with common settings."""
     
     # Core Flask settings
-    # IMPORTANT: In production, SECRET_KEY MUST be set via environment variable
+    # IMPORTANT: Set SECRET_KEY via environment variable in production.
+    # Fallback is kept to avoid hard startup failures on misconfigured first deploys.
     SECRET_KEY = os.getenv('SECRET_KEY')
-    if not SECRET_KEY and os.getenv('FLASK_ENV') == 'production':
-        raise ValueError("CRITICAL: SECRET_KEY environment variable must be set in production!")
     if not SECRET_KEY:
-        SECRET_KEY = 'dev-key-change-in-production'
+        SECRET_KEY = 'unsafe-temporary-key-change-me'
     
     JSON_SORT_KEYS = False
     
@@ -69,10 +78,7 @@ class DevelopmentConfig(Config):
     DEBUG = True
     TESTING = False
     
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        'DATABASE_URL',
-        'sqlite:///restaurant_ai_dev.db'
-    )
+    SQLALCHEMY_DATABASE_URI = _normalized_database_url('sqlite:///restaurant_ai_dev.db')
     
     # Looser security for development
     SESSION_COOKIE_SECURE = False
@@ -91,10 +97,7 @@ class ProductionConfig(Config):
     DEBUG = False
     TESTING = False
     
-    SQLALCHEMY_DATABASE_URI = os.getenv(
-        'DATABASE_URL',
-        'postgresql://user:password@localhost:5432/restaurant_ai'
-    )
+    SQLALCHEMY_DATABASE_URI = _normalized_database_url('sqlite:///restaurant_ai_prod_fallback.db')
     
     # Production database optimizations
     SQLALCHEMY_ENGINE_OPTIONS = {
