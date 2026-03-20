@@ -14,6 +14,9 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy requirements files first for better Docker layer caching and to satisfy nested -r includes.
+COPY config/requirements.txt config/requirements.txt
+COPY config/requirements-dev.txt config/requirements-dev.txt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
