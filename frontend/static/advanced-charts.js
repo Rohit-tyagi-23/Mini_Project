@@ -48,25 +48,31 @@ const advancedCharts = {
                     rotation: 270
                 }]
             },
-            options: {
-                responsive: true,
-                maintainAspectRatio: true,
-                plugins: {
-                    legend: {
-                        display: true,
-                        position: 'bottom'
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                return context.label + ': ' + percentage.toFixed(1) + '%';
-                            }
-                        }
-                    }
-                }
-            }
-        });
+           options: {
+  responsive: true,
+  maintainAspectRatio: true,
+
+  animation: false,   // ✅ ADD THIS
+
+  interaction: {      // ✅ ADD THIS
+    mode: 'nearest',
+    intersect: false
+  },
+
+  plugins: {
+    legend: {
+      display: true,
+      position: 'bottom'
     },
+    tooltip: {
+      callbacks: {
+        label: function(context) {
+          return context.label + ': ' + percentage.toFixed(1) + '%';
+        }
+      }
+    }
+  }
+},
     
     /**
      * Render seasonal trend analysis
