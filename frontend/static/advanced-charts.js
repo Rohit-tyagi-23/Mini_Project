@@ -48,16 +48,9 @@ const advancedCharts = {
                     rotation: 270
                 }]
             },
-           options: {
-    responsive: true,
-    maintainAspectRatio: true,
-
-    animation: false,
-
-    interaction: {
-        mode: 'nearest',
-        intersect: false
-    },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
                 plugins: {
                     legend: {
                         display: true,
