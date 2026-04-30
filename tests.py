@@ -12,5 +12,8 @@ _spec = _ilu.spec_from_file_location('script_tests_module', SCRIPT_TESTS_PATH)
 _script_tests = _ilu.module_from_spec(_spec)
 _spec.loader.exec_module(_script_tests)
 
+def test_basic():
+    assert 1 + 1 == 2
+
 if __name__ == '__main__':
     _script_tests.unittest.main()
