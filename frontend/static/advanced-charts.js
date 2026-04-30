@@ -49,30 +49,31 @@ const advancedCharts = {
                 }]
             },
            options: {
-  responsive: true,
-  maintainAspectRatio: true,
+    responsive: true,
+    maintainAspectRatio: true,
 
-  animation: false,   // ✅ ADD THIS
+    animation: false,
 
-  interaction: {      // ✅ ADD THIS
-    mode: 'nearest',
-    intersect: false
-  },
-
-  plugins: {
-    legend: {
-      display: true,
-      position: 'bottom'
+    interaction: {
+        mode: 'nearest',
+        intersect: false
     },
-    tooltip: {
-      callbacks: {
-        label: function(context) {
-          return context.label + ': ' + percentage.toFixed(1) + '%';
-        }
-      }
-    }
-  }
-},
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom'
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.label + ': ' + percentage.toFixed(1) + '%';
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    },
     
     /**
      * Render seasonal trend analysis
