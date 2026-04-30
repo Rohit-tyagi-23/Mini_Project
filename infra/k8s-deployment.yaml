@@ -25,7 +25,7 @@ metadata:
 type: Opaque
 stringData:
   SECRET_KEY: "your-secret-key-here"
-  DATABASE_URL: "postgresql://user:pass@postgres:5432/restaurant_ai"
+ DATABASE_URL: ${DATABASE_URL}
   REDIS_URL: "redis://redis:6379/0"
   MAIL_PASSWORD: "your-mail-password"
   TWILIO_AUTH_TOKEN: "your-twilio-token"
